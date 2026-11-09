@@ -60,3 +60,13 @@ fastlane/report.xml
 fastlane/Preview.html
 fastlane/screenshots/**/*.png
 fastlane/test_output
+
+# Kaiming
+build/
+.probe/
+DerivedData/
+*.xcresult
+
+# macOS
+.DS_Store
+*.xcuserstate

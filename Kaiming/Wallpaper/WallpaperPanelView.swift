@@ -1,0 +1,599 @@
+import AppKit
+import SwiftUI
+import UniformTypeIdentifiers
+
+/// 菜单栏面板中的「壁纸」页。
+///
+/// 布局适配 372pt 内容宽（菜单栏面板 400pt 减去左右各 14pt），所有数据源操作都作用于
+/// 上方勾选的屏幕集合；成功 / 失败通过 `AppState.flash` 反馈。
+struct WallpaperPanelView: View {
+    @ObservedObject private var manager = WallpaperManager.shared
+
+    @State private var selectedScreenIDs: Set<String> = []
+    @State private var previewCapture: WallpaperRecentCapture?
+    @State private var isChoosingImage = false
+    @State private var isChoosingRotationFolder = false
+    @State private var rotationFolder: URL?
+    @State private var rotationMinutes = 5
+    @State private var isRotationExpanded = false
+
+    /// 菜单栏面板内容宽：400 - 2 × 14 = 372pt。
+    private let panelContentWidth: CGFloat = 372
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            header
+
+            if manager.screens.isEmpty {
+                emptyScreensCard
+            } else {
+                screensCard
+            }
+
+            dataSourceCard
+            recentCapturesCard
+            rotationCard
+            storageHint
+        }
+        .frame(maxWidth: panelContentWidth, alignment: .leading)
+        .onAppear {
+            manager.refreshScreens()
+            manager.loadRecentCaptures()
+            if selectedScreenIDs.isEmpty {
+                selectedScreenIDs = Set(manager.screens.map(\.id))
+            }
+        }
+        .onChange(of: manager.screens) {
+            let available = Set(manager.screens.map(\.id))
+            if selectedScreenIDs.isEmpty {
+                selectedScreenIDs = available
+            } else {
+                selectedScreenIDs.formIntersection(available)
+            }
+        }
+    }
+
+    // MARK: - 头部
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            Label("壁纸", systemImage: "photo.on.rectangle.angled")
+                .font(.system(size: 13, weight: .semibold))
+
+            Spacer(minLength: 0)
+
+            if manager.isBusy {
+                ProgressView()
+                    .controlSize(.small)
+            }
+
+            Button {
+                manager.refreshScreens()
+            } label: {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .buttonStyle(.borderless)
+            .help("刷新屏幕列表")
+            .disabled(manager.isBusy)
+        }
+    }
+
+    // MARK: - 屏幕
+
+    private var screensCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                sectionTitle("屏幕")
+                Spacer(minLength: 0)
+                Button("全选") {
+                    selectedScreenIDs = Set(manager.screens.map(\.id))
+                }
+                .buttonStyle(.borderless)
+                .font(.system(size: 11))
+                .disabled(manager.isBusy)
+
+                Button("反选") {
+                    let all = Set(manager.screens.map(\.id))
+                    selectedScreenIDs = all.subtracting(selectedScreenIDs)
+                }
+                .buttonStyle(.borderless)
+                .font(.system(size: 11))
+                .disabled(manager.isBusy)
+            }
+
+            ForEach(manager.screens) { screen in
+                screenRow(screen)
+            }
+
+            targetSummary
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(cardBackground)
+    }
+
+    private func screenRow(_ screen: ScreenInfo) -> some View {
+        HStack(spacing: 10) {
+            Toggle("", isOn: Binding(
+                get: { selectedScreenIDs.contains(screen.id) },
+                set: { isSelected in
+                    if isSelected {
+                        selectedScreenIDs.insert(screen.id)
+                    } else {
+                        selectedScreenIDs.remove(screen.id)
+                    }
+                }
+            ))
+            .labelsHidden()
+            .toggleStyle(.checkbox)
+            .disabled(manager.isBusy)
+
+            WallpaperURLThumbnail(url: screen.currentWallpaper)
+                .frame(width: 72, height: 44)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 5) {
+                    Text(screen.name)
+                        .font(.system(size: 12, weight: .medium))
+                        .lineLimit(1)
+
+                    if screen.isMain {
+                        Text("主屏")
+                            .font(.system(size: 9, weight: .semibold))
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(Capsule().fill(Color.accentColor.opacity(0.15)))
+                            .foregroundStyle(Color.accentColor)
+                    }
+                }
+
+                Text(pixelSizeText(screen.pixelSize))
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+
+                Text(screen.currentWallpaper?.lastPathComponent ?? "系统默认或动态壁纸")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(6)
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(Color.secondary.opacity(0.05))
+        )
+    }
+
+    private var targetSummary: some View {
+        HStack(spacing: 5) {
+            Image(systemName: selectedScreenIDs.isEmpty ? "exclamationmark.circle" : "checkmark.circle.fill")
+                .font(.system(size: 10))
+                .foregroundStyle(selectedScreenIDs.isEmpty ? Color.orange : Color.green)
+
+            Text(selectedScreenIDs.isEmpty ? "请至少勾选一块屏幕" : "目标：已选 \(selectedScreenIDs.count) 块屏幕")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func pixelSizeText(_ size: CGSize) -> String {
+        "\(Int(size.width.rounded())) × \(Int(size.height.rounded()))"
+    }
+
+    private var emptyScreensCard: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("未检测到可用显示器", systemImage: "display")
+                .font(.system(size: 12, weight: .semibold))
+
+            Text("请确认显示器连接正常，然后刷新屏幕列表。")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+
+            Button("刷新屏幕") {
+                manager.refreshScreens()
+            }
+            .controlSize(.small)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(cardBackground)
+    }
+
+    // MARK: - 数据源
+
+    private var dataSourceCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionTitle("数据源")
+
+            HStack(spacing: 8) {
+                Button {
+                    manager.setFromPasteboard(screenIDs: selectedScreenIDs)
+                } label: {
+                    Label("从剪贴板", systemImage: "doc.on.clipboard")
+                        .font(.system(size: 11))
+                }
+                .disabled(manager.isBusy || selectedScreenIDs.isEmpty)
+
+                Button {
+                    isChoosingImage = true
+                } label: {
+                    Label("选择图片…", systemImage: "photo.badge.plus")
+                        .font(.system(size: 11))
+                }
+                .disabled(manager.isBusy || selectedScreenIDs.isEmpty)
+                .fileImporter(
+                    isPresented: $isChoosingImage,
+                    allowedContentTypes: [.image],
+                    allowsMultipleSelection: false
+                ) { result in
+                    handleImageSelection(result)
+                }
+
+                Spacer(minLength: 0)
+            }
+            .controlSize(.small)
+
+            Text("图片会复制到应用数据目录后再设为壁纸，不引用临时路径。")
+                .font(.system(size: 9))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(cardBackground)
+    }
+
+    private func handleImageSelection(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            manager.setWallpaper(fileURL: url, screenIDs: selectedScreenIDs)
+        case .failure(let error):
+            AppState.shared.flash("选择图片失败：\(error.localizedDescription)", kind: .error)
+        }
+    }
+
+    // MARK: - 最近截图
+
+    private var recentCapturesCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                sectionTitle("最近截图")
+
+                if manager.isLoadingCaptures {
+                    ProgressView()
+                        .controlSize(.mini)
+                }
+
+                Spacer(minLength: 0)
+
+                Button {
+                    manager.loadRecentCaptures()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 10, weight: .medium))
+                }
+                .buttonStyle(.borderless)
+                .help("刷新最近截图")
+                .disabled(manager.isLoadingCaptures)
+            }
+
+            if manager.capturesDirectoryUnreadable {
+                Label("无法读取截图目录，请检查访问权限。", systemImage: "exclamationmark.triangle")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if manager.recentCaptures.isEmpty {
+                Text("暂无截图。截图模块保存到 Captures 目录后会自动出现在这里。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                LazyVGrid(columns: captureColumns, spacing: 8) {
+                    ForEach(manager.recentCaptures) { capture in
+                        captureCell(capture)
+                    }
+                }
+
+                if let previewCapture {
+                    previewCard(previewCapture)
+                }
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(cardBackground)
+    }
+
+    private var captureColumns: [GridItem] {
+        Array(repeating: GridItem(.flexible(), spacing: 8), count: 3)
+    }
+
+    private func captureCell(_ capture: WallpaperRecentCapture) -> some View {
+        let isSelected = previewCapture?.id == capture.id
+        return Button {
+            previewCapture = isSelected ? nil : capture
+        } label: {
+            VStack(alignment: .leading, spacing: 3) {
+                WallpaperDataThumbnail(data: capture.thumbnailData, symbol: "photo")
+                    .frame(height: 64)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 2)
+                    )
+
+                Text(capture.url.lastPathComponent)
+                    .font(.system(size: 8))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(manager.isBusy)
+        .help("点击预览，再选择「设为壁纸」")
+    }
+
+    private func previewCard(_ capture: WallpaperRecentCapture) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            WallpaperDataThumbnail(data: capture.thumbnailData, symbol: "photo")
+                .frame(height: 140)
+                .frame(maxWidth: .infinity)
+
+            HStack(alignment: .center, spacing: 8) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(capture.url.lastPathComponent)
+                        .font(.system(size: 11, weight: .medium))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+
+                    Text(capture.modifiedAt.formatted(date: .numeric, time: .shortened))
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 0)
+
+                Button("取消") {
+                    previewCapture = nil
+                }
+                .controlSize(.small)
+
+                Button("设为壁纸") {
+                    manager.setWallpaper(fileURL: capture.url, screenIDs: selectedScreenIDs)
+                }
+                .controlSize(.small)
+                .buttonStyle(.borderedProminent)
+                .disabled(manager.isBusy || selectedScreenIDs.isEmpty)
+            }
+        }
+        .padding(8)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.secondary.opacity(0.08))
+        )
+    }
+
+    // MARK: - 文件夹轮换（可选能力）
+
+    private var rotationCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    isRotationExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    sectionTitle("文件夹轮换")
+
+                    if manager.isRotating {
+                        Text("进行中")
+                            .font(.system(size: 9, weight: .semibold))
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(Capsule().fill(Color.green.opacity(0.15)))
+                            .foregroundStyle(.green)
+                    }
+
+                    Spacer(minLength: 0)
+
+                    Image(systemName: isRotationExpanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isRotationExpanded {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        Button("选择文件夹…") {
+                            isChoosingRotationFolder = true
+                        }
+                        .controlSize(.small)
+                        .disabled(manager.isRotating)
+                        .fileImporter(
+                            isPresented: $isChoosingRotationFolder,
+                            allowedContentTypes: [.folder],
+                            allowsMultipleSelection: false
+                        ) { result in
+                            handleRotationFolderSelection(result)
+                        }
+
+                        Text(
+                            manager.rotationFolder?.lastPathComponent
+                                ?? rotationFolder?.lastPathComponent
+                                ?? "未选择文件夹"
+                        )
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+
+                        Spacer(minLength: 0)
+                    }
+
+                    Picker("间隔", selection: $rotationMinutes) {
+                        Text("1 分钟").tag(1)
+                        Text("5 分钟").tag(5)
+                        Text("15 分钟").tag(15)
+                        Text("30 分钟").tag(30)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .disabled(manager.isRotating)
+
+                    HStack(spacing: 8) {
+                        if manager.isRotating {
+                            Text("每 \(Int(manager.rotationInterval / 60)) 分钟换一张，使用开始时的屏幕。")
+                                .font(.system(size: 9))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            Spacer(minLength: 0)
+
+                            Button("停止轮换") {
+                                manager.stopRotation()
+                            }
+                            .controlSize(.small)
+                        } else {
+                            Text("使用当前勾选的屏幕；轮换仅本次运行有效。")
+                                .font(.system(size: 9))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            Spacer(minLength: 0)
+
+                            Button("开始轮换") {
+                                guard let rotationFolder else { return }
+                                manager.startRotation(
+                                    folder: rotationFolder,
+                                    interval: TimeInterval(rotationMinutes * 60),
+                                    screenIDs: selectedScreenIDs
+                                )
+                            }
+                            .controlSize(.small)
+                            .disabled(rotationFolder == nil || selectedScreenIDs.isEmpty || manager.isBusy)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(cardBackground)
+    }
+
+    private func handleRotationFolderSelection(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            rotationFolder = url
+        case .failure(let error):
+            AppState.shared.flash("选择文件夹失败：\(error.localizedDescription)", kind: .error)
+        }
+    }
+
+    // MARK: - 持久化说明
+
+    private var storageHint: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("壁纸文件保存在 Application Support/Kaiming/Wallpapers，系统会记住路径，重启后仍然有效。")
+                .font(.system(size: 9))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 8) {
+                Button("打开壁纸文件夹") {
+                    openWallpapersFolder()
+                }
+                .controlSize(.small)
+
+                Text("最多保留 50 张；正在使用的文件不会被清理。")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+
+                Spacer(minLength: 0)
+            }
+        }
+    }
+
+    private func openWallpapersFolder() {
+        do {
+            let url = try AppPaths.ensureDirectory(AppPaths.wallpapers)
+            NSWorkspace.shared.open(url)
+        } catch {
+            AppState.shared.flash("无法打开壁纸目录：\(error.localizedDescription)", kind: .error)
+        }
+    }
+
+    // MARK: - 通用视图
+
+    private func sectionTitle(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 12, weight: .semibold))
+    }
+
+    private var cardBackground: some View {
+        RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .fill(Color.secondary.opacity(0.08))
+    }
+}
+
+// MARK: - 缩略图
+
+/// 用 `Data` 承载缩略图（后台队列解码好），主线程按需转成 `NSImage`。
+private struct WallpaperDataThumbnail: View {
+    let data: Data?
+    let symbol: String
+
+    @State private var image: NSImage?
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Color.secondary.opacity(0.12))
+
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                Image(systemName: symbol)
+                    .font(.system(size: 15))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .task(id: data) {
+            if let data {
+                image = NSImage(data: data)
+            } else {
+                image = nil
+            }
+        }
+    }
+}
+
+/// 屏幕上“当前壁纸”的缩略图，按 URL 异步加载。
+private struct WallpaperURLThumbnail: View {
+    let url: URL?
+
+    @State private var thumbnailData: Data?
+
+    var body: some View {
+        WallpaperDataThumbnail(data: thumbnailData, symbol: "display")
+            .task(id: url) {
+                thumbnailData = nil
+                guard let url else { return }
+                thumbnailData = await WallpaperManager.shared.thumbnailData(for: url)
+            }
+    }
+}
