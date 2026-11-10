@@ -78,6 +78,7 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     var layoutBridge: LayoutBridge?
     var layoutDelegate: MarkdownLayoutManagerDelegate?
     var onLinkClick: ((String) -> Void)?
+    var onWebLinkClick: ((URL) -> Void)?
     var onCaretRectChange: ((CGRect) -> Void)?
     var onTextMutation: ((MarkdownTextMutation) -> Void)?
     /// Embedder hook to build the right-click menu (the engine ships none). Gets the
@@ -314,12 +315,14 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
          fontSize: CGFloat,
          isWikiLinkActive: Binding<Bool>,
          onLinkClick: ((String) -> Void)?,
+         onWebLinkClick: ((URL) -> Void)?,
          onInlineSelectionChange: ((InlineSelectionState?) -> Void)?) {
         _text = text
         self.fontName = fontName
         self.fontSize = fontSize
         _isWikiLinkActive = isWikiLinkActive
         self.onLinkClick = onLinkClick
+        self.onWebLinkClick = onWebLinkClick
         self.onCaretRectChange = nil
         self.onInlineSelectionChange = onInlineSelectionChange
         self.lastSyncedText = text.wrappedValue

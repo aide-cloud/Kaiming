@@ -25,7 +25,6 @@ struct WallpaperPanelView: View {
     @ObservedObject private var manager = WallpaperManager.shared
 
     @State private var selectedScreenIDs: Set<String> = []
-    @State private var previewCapture: WallpaperRecentCapture?
     @State private var mediaKind: WallpaperMediaKind = .image
     @State private var rotationMinutes = 5
     @State private var isRotationExpanded = false
@@ -44,14 +43,12 @@ struct WallpaperPanelView: View {
             }
 
             dataSourceCard
-            recentCapturesCard
             rotationCard
             storageHint
         }
         .frame(maxWidth: panelContentWidth, alignment: .leading)
         .onAppear {
             manager.refreshScreens()
-            manager.loadRecentCaptures()
             if manager.isDynamicWallpaperActive {
                 mediaKind = .video
             }
@@ -394,127 +391,6 @@ struct WallpaperPanelView: View {
             guard let url = urls.first else { return }
             manager.startDynamicWallpaper(fileURL: url, screenIDs: selectedScreenIDs)
         }
-    }
-
-    // MARK: - 最近截图
-
-    private var recentCapturesCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                sectionTitle("最近截图")
-
-                if manager.isLoadingCaptures {
-                    ProgressView()
-                        .controlSize(.mini)
-                }
-
-                Spacer(minLength: 0)
-
-                Button {
-                    manager.loadRecentCaptures()
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 10, weight: .medium))
-                }
-                .buttonStyle(.borderless)
-                .help("刷新最近截图")
-                .disabled(manager.isLoadingCaptures)
-            }
-
-            if manager.capturesDirectoryUnreadable {
-                Label("无法读取截图目录，请检查访问权限。", systemImage: "exclamationmark.triangle")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else if manager.recentCaptures.isEmpty {
-                Text("暂无截图。截图模块保存到 Captures 目录后会自动出现在这里。")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else {
-                LazyVGrid(columns: captureColumns, spacing: 8) {
-                    ForEach(manager.recentCaptures) { capture in
-                        captureCell(capture)
-                    }
-                }
-
-                if let previewCapture {
-                    previewCard(previewCapture)
-                }
-            }
-        }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(cardBackground)
-    }
-
-    private var captureColumns: [GridItem] {
-        Array(repeating: GridItem(.flexible(), spacing: 8), count: 3)
-    }
-
-    private func captureCell(_ capture: WallpaperRecentCapture) -> some View {
-        let isSelected = previewCapture?.id == capture.id
-        return Button {
-            previewCapture = isSelected ? nil : capture
-        } label: {
-            VStack(alignment: .leading, spacing: 3) {
-                WallpaperDataThumbnail(data: capture.thumbnailData, symbol: "photo")
-                    .frame(height: 64)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 2)
-                    )
-
-                Text(capture.url.lastPathComponent)
-                    .font(.system(size: 8))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-        }
-        .buttonStyle(.plain)
-        .disabled(manager.isBusy)
-        .help("点击预览，再选择「设为壁纸」")
-    }
-
-    private func previewCard(_ capture: WallpaperRecentCapture) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            WallpaperDataThumbnail(data: capture.thumbnailData, symbol: "photo")
-                .frame(height: 140)
-                .frame(maxWidth: .infinity)
-
-            HStack(alignment: .center, spacing: 8) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(capture.url.lastPathComponent)
-                        .font(.system(size: 11, weight: .medium))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-
-                    Text(capture.modifiedAt.formatted(date: .numeric, time: .shortened))
-                        .font(.system(size: 9))
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer(minLength: 0)
-
-                Button("取消") {
-                    previewCapture = nil
-                }
-                .controlSize(.small)
-
-                Button("设为壁纸") {
-                    manager.setWallpaper(fileURL: capture.url, screenIDs: selectedScreenIDs)
-                }
-                .controlSize(.small)
-                .buttonStyle(.borderedProminent)
-                .disabled(manager.isBusy || selectedScreenIDs.isEmpty)
-            }
-        }
-        .padding(8)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.secondary.opacity(0.08))
-        )
     }
 
     // MARK: - 文件夹轮换（可选能力）

@@ -294,3 +294,22 @@ Kaiming --capture-test full [--capture-test-copy]
 ```
 
 `--capture-test` 只覆盖本次采集的剪贴板/声音行为，**不修改 SettingsStore/UserDefaults**。
+
+
+---
+
+# v1.3 扩展契约
+
+## 17. 截图原生像素
+- `SCDisplay.width/height` 是点；使用 `SCContentFilter.pointPixelScale` 与
+  `CGDisplayMode.pixelWidth/Height` 计算目标像素，`captureResolution = .best`、`scalesToFit = false`。
+- 全屏/区域冻结图/长截图逐帧/窗口截图共用像素尺寸策略；标注拍平保持底图像素尺寸。
+
+## 18. 壁纸来源
+- 壁纸 UI 不再展示/扫描 `AppPaths.captures`；来源仅剪贴板图片、用户选择图片、视频、轮换文件夹。
+
+## 19. Markdown 富内容
+- `MarkdownImageProvider`：本地相对/绝对/file URL 与 http(s) 图片。
+- `MarkdownLinkRouter`：相对文件路径点击在应用内打开（md→编辑器，文本/图片→预览），外部 URL 系统打开。
+- `MarkdownKit` 第 6 条补丁：`onWebLinkClick` + 相对路径不再强制 https；升级需重放。
+- 外链卡片/HTML 块在右侧 inspector 原生渲染；HTML 脚本/CSS、远程 img 不执行。

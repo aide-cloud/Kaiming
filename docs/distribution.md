@@ -54,7 +54,7 @@ DEVELOPMENT_TEAM=ABCDE12345 ./Scripts/archive.sh --sign
    app 与 framework，满足公证要求。
 2. `-exportArchive` 生成 `build/export/Kaiming.app`；
 3. `codesign --verify --deep --strict`；
-4. 生成 DMG：`build/Kaiming-1.2.0.dmg`。
+4. 生成 DMG：`build/Kaiming-1.3.0.dmg`。
 
 检查签名：
 
@@ -96,8 +96,8 @@ NOTARY_PROFILE=KaimingNotary ./Scripts/notarize.sh
 
 ## 5. 版本号
 
-- `MARKETING_VERSION`：`Config/Info.plist` 里通过 `$(MARKETING_VERSION)` 注入，当前 1.2.0；
-- `CURRENT_PROJECT_VERSION`（build）：当前 5；
+- `MARKETING_VERSION`：`Config/Info.plist` 里通过 `$(MARKETING_VERSION)` 注入，当前 1.3.0；
+- `CURRENT_PROJECT_VERSION`（build）：当前 6；
 - 发版时同步修改 `Kaiming.xcodeproj` target 的 `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION`。
 
 ## 6. 已知环境限制

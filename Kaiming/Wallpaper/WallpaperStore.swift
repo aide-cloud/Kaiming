@@ -42,27 +42,15 @@ enum WallpaperPasteboardResult: Sendable {
     case empty
 }
 
-/// 最近截图网格中的一条记录（缩略图在后台生成，主线程只负责显示）。
-struct WallpaperRecentCapture: Identifiable, Equatable, Sendable {
-    let id: String
-    let url: URL
-    let modifiedAt: Date
-    let thumbnailData: Data?
-}
-
-/// 壁纸模块的文件仓库：负责持久化复制、缩略图、最近截图扫描与保留策略。
+/// 壁纸模块的文件仓库：负责持久化复制、缩略图与保留策略。
 ///
 /// 所有成员都是非隔离的静态方法，内部通过 `WallpaperIO.disk` 串行执行；
 /// 只把 `Sendable` 数据（`Data` / `URL` / 值类型）带出队列。
 enum WallpaperFileStore {
     /// `AppPaths.wallpapers` 中保留的最大壁纸数量（当前正在使用的文件不受限制）。
     static let retentionLimit = 50
-    /// 面板中最多展示的最近截图数量。
-    static let recentCaptureLimit = 12
     /// 轮换文件夹一次最多扫描的图片数量，避免超大目录拖慢主线程交互。
     static let rotationFolderLimit = 2000
-
-    private static let captureExtensions: Set<String> = ["png", "jpg", "jpeg"]
 
     // MARK: - 异步桥
 
@@ -174,47 +162,6 @@ enum WallpaperFileStore {
             }
             return destination
         }
-    }
-
-    // MARK: - 最近截图
-
-    /// 扫描 `AppPaths.captures` 下的 png / jpg，按修改时间倒序取前 12 张，并生成缩略图。
-    static func listRecentCaptures() async -> [WallpaperRecentCapture] {
-        do {
-            return try await perform { scanRecentCapturesSync() }
-        } catch {
-            Log.wallpaper.error("Scan recent captures failed: \(error.localizedDescription, privacy: .public)")
-            return []
-        }
-    }
-
-    private static func scanRecentCapturesSync() -> [WallpaperRecentCapture] {
-        let directory = AppPaths.captures
-        _ = try? AppPaths.ensureDirectory(directory)
-
-        let keys: [URLResourceKey] = [.contentModificationDateKey, .isRegularFileKey]
-        guard let urls = try? FileManager.default.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: keys,
-            options: [.skipsHiddenFiles]
-        ) else {
-            return []
-        }
-
-        let captures = urls
-            .filter { captureExtensions.contains($0.pathExtension.lowercased()) }
-            .filter { isReadableImageFile($0) }
-            .sorted { modificationDate(of: $0) > modificationDate(of: $1) }
-            .prefix(recentCaptureLimit)
-            .map { url in
-                WallpaperRecentCapture(
-                    id: url.path,
-                    url: url,
-                    modifiedAt: modificationDate(of: url),
-                    thumbnailData: thumbnailPNGData(for: url, maxPixel: 480)
-                )
-            }
-        return Array(captures)
     }
 
     // MARK: - 缩略图

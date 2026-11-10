@@ -27,7 +27,7 @@ Kaiming 的 Markdown 模块使用原生 TextKit 2 渲染，第三方代码全部
 许可证文本保留在 `docs/licenses/`：`LICENSE-MarkdownEngine.txt`、`LICENSE-SwiftMath.txt`、
 `highlight.js-LICENSE.txt`。
 
-## 为内嵌做的补丁（共 5 处，均为机械替换）
+## 为内嵌做的补丁（5 处机械替换 + 1 处链接补丁）
 
 1. `MarkdownEngineCodeBlocks/HighlightJSBridge.swift`
    - 移除 `import MarkdownEngine`（同 target 内嵌后不再需要模块导入）。
@@ -40,12 +40,22 @@ Kaiming 的 Markdown 模块使用原生 TextKit 2 渲染，第三方代码全部
    - 移除 `import SwiftMath`、`import MarkdownEngine`。
 5. 删除 `MarkdownEngine.docc/`（DocC 目录，不参与运行，避免 app target 触发文档编译）
    与重复的许可证副本（Xcode 资源拷贝重名会直接构建失败）。
+6. 标准链接点击回调与相对路径保留（Kaiming 富内容需要，非机械替换）
+   - `MarkdownEngine/TextView/NativeTextViewWrapper.swift`：新增公开 `onWebLinkClick: ((URL) -> Void)?`，
+     并像其他回调一样在 make/update 时同步给 coordinator；默认 `nil` 保持 AppKit 原有打开行为。
+   - `MarkdownEngine/TextView/Coordinator/NativeTextViewCoordinator.swift`、
+     `.../NativeTextViewCoordinator+TextDelegate.swift`：URL 值的 `.link` 点击（wiki 链接解析失败后）
+     交给 `onWebLinkClick`；没有回调时仍返回 `false` 让 AppKit 打开。
+   - `MarkdownEngine/Styling/MarkdownASTStyler.swift`：无 scheme 链接不再一律补 `https://`。
+     首段“像域名”（含点且扩展名不是已知文件类型）才补 `https://`；`docs/a.md`、`assets/pic.png`、
+     `/abs/path`、`./x`、`../x`、`~/x`、`#anchor` 保留相对形式，交给 App 的 `MarkdownLinkRouter` 解析。
+   - 升级上游时若替换以上文件，必须重新应用第 6 条，并重跑 Markdown 富内容冒烟（链接点击 / 项目树 / 图片）。
 
 ## 升级步骤
 
 ```bash
 cd /tmp && git clone --depth 1 --branch <version> https://github.com/nodes-app/swift-markdown-engine.git
-# 用 Sources/ 覆盖 MarkdownKit/ 对应目录，重新应用上面 5 处补丁
+# 用 Sources/ 覆盖 MarkdownKit/ 对应目录，重新应用上面的补丁（1–6）
 # 同步更新本文件的版本与 commit，并重新跑构建 + Markdown 冒烟测试
 ```
 

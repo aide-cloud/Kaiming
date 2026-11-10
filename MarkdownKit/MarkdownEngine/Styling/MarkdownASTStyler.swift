@@ -902,15 +902,54 @@ enum MarkdownASTStyler {
         }
     }
 
+    /// Bare domains keep the historical `https://` assumption. Path-like
+    /// targets (docs/a.md, assets/pic.png, /abs, ./, ../, ~/, #anchor) stay
+    /// relative so the embedder can resolve them against the open document.
+    private static func resolvedLinkTarget(_ raw: String) -> String {
+        var target = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if target.hasPrefix("<"), target.hasSuffix(">"), target.count > 2 {
+            target = String(target.dropFirst().dropLast())
+        }
+        guard !target.isEmpty else { return target }
+        if target.contains("://") { return target }
+        if target.hasPrefix("//") { return "https:\(target)" }
+        if target.hasPrefix("/") || target.hasPrefix("./") || target.hasPrefix("../")
+            || target.hasPrefix("~/") || target.hasPrefix("#") || target.hasPrefix("?") {
+            return target
+        }
+        let firstComponent = target
+            .split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
+            .first.map(String.init) ?? target
+        let ext = (firstComponent as NSString).pathExtension.lowercased()
+        if firstComponent.contains("."), !linkFileExtensions.contains(ext) {
+            return "https://\(target)"
+        }
+        return target
+    }
+
+    /// Extensions that make a scheme-less link look like a file path rather
+    /// than a bare domain (e.g. `example.com` stays external, `a.md` internal).
+    private static let linkFileExtensions: Set<String> = [
+        "md", "markdown", "txt", "text", "png", "jpg", "jpeg", "gif", "webp",
+        "heic", "heif", "tif", "tiff", "bmp", "svg", "pdf", "json", "jsonc",
+        "yml", "yaml", "toml", "ini", "cfg", "conf", "xml", "html", "htm",
+        "css", "scss", "less", "js", "mjs", "cjs", "jsx", "ts", "tsx", "vue",
+        "swift", "m", "mm", "h", "c", "cc", "cpp", "hpp", "java", "kt", "kts",
+        "py", "rb", "go", "rs", "php", "sh", "bash", "zsh", "sql", "csv",
+        "tsv", "log", "plist", "entitlements", "xcconfig", "pbxproj", "tex",
+        "lock", "zip", "mp4", "mov", "mp3", "wav"
+    ]
+
     private static func styleLink(
         range: NSRange, textRange: NSRange, url urlRange: NSRange, markers: [NSRange],
         children: [InlineNode], font: NSFont, ctx: Ctx, into attrs: inout [StyledRange]
     ) {
         attrs.append((range, [.spellingState: 0]))
-        var urlString = ctx.ns.substring(with: urlRange)
-        if !urlString.contains("://") { urlString = "https://\(urlString)" }
+        let urlString = Self.resolvedLinkTarget(ctx.ns.substring(with: urlRange))
         let isActive = ctx.isActive(range)
-        if let url = URL(string: urlString) {
+        let url = URL(string: urlString)
+            ?? URL(string: urlString.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed) ?? urlString)
+        if let url {
             if isActive {
                 attrs.append((textRange, [
                     .foregroundColor: ctx.theme.link.withAlphaComponent(ctx.config.link.activeLinkAlpha),

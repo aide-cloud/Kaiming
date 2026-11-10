@@ -124,6 +124,96 @@ enum ScreenCaptureService {
         }
     }
 
+    // MARK: - 像素尺寸
+
+    struct DisplayPixelMetrics {
+        let pointSize: CGSize
+        let nativePixelSize: CGSize
+        let computedPixelSize: CGSize
+        let targetPixelSize: CGSize
+        let pointPixelScale: CGFloat
+    }
+
+    /// SCDisplay.width/height 是「点」，SCContentFilter.pointPixelScale 是像素/点；
+    /// 同时参考 CGDisplayMode.pixelWidth/Height 的真实物理像素（CGDisplayPixelsWide/High
+    /// 在 HiDPI 缩放模式下可能返回点尺寸），避免错失 4K/Retina 的物理像素。
+    private static func displayPixelMetrics(
+        for display: SCDisplay,
+        filter: SCContentFilter
+    ) -> DisplayPixelMetrics {
+        let pointSize = CGSize(width: CGFloat(display.width), height: CGFloat(display.height))
+        let pointPixelScale = max(CGFloat(filter.pointPixelScale), 1)
+        let computed = CGSize(
+            width: (pointSize.width * pointPixelScale).rounded(),
+            height: (pointSize.height * pointPixelScale).rounded()
+        )
+        // CGDisplayPixelsWide/High 在 HiDPI 缩放模式下可能返回点尺寸（本机 4K 返回 1920），
+        // 用 CGDisplayMode 的 pixelWidth/pixelHeight 才能拿到真实物理像素（3840×2160）。
+        let native: CGSize
+        if let mode = CGDisplayCopyDisplayMode(display.displayID) {
+            let pixelWidth = mode.pixelWidth
+            let pixelHeight = mode.pixelHeight
+            if pixelWidth > 0, pixelHeight > 0 {
+                native = CGSize(width: CGFloat(pixelWidth), height: CGFloat(pixelHeight))
+            } else {
+                native = CGSize(
+                    width: CGFloat(CGDisplayPixelsWide(display.displayID)),
+                    height: CGFloat(CGDisplayPixelsHigh(display.displayID))
+                )
+            }
+        } else {
+            native = CGSize(
+                width: CGFloat(CGDisplayPixelsWide(display.displayID)),
+                height: CGFloat(CGDisplayPixelsHigh(display.displayID))
+            )
+        }
+        let target = CGSize(
+            width: max(computed.width, native.width, 1),
+            height: max(computed.height, native.height, 1)
+        )
+        return DisplayPixelMetrics(
+            pointSize: pointSize,
+            nativePixelSize: native,
+            computedPixelSize: computed,
+            targetPixelSize: target,
+            pointPixelScale: pointPixelScale
+        )
+    }
+
+    /// 按屏幕最高像素分辨率创建采集配置；不缩放、尽量使用 best 捕获分辨率。
+    private static func makeDisplayConfiguration(
+        display: SCDisplay,
+        filter: SCContentFilter,
+        showsCursor: Bool
+    ) -> (configuration: SCStreamConfiguration, metrics: DisplayPixelMetrics) {
+        let metrics = displayPixelMetrics(for: display, filter: filter)
+        let configuration = SCStreamConfiguration()
+        configuration.width = max(1, Int(metrics.targetPixelSize.width))
+        configuration.height = max(1, Int(metrics.targetPixelSize.height))
+        configuration.captureResolution = .best
+        configuration.scalesToFit = false
+        configuration.showsCursor = showsCursor
+        configuration.capturesAudio = false
+        return (configuration, metrics)
+    }
+
+    private static func logDisplayCapture(
+        display: SCDisplay,
+        filter: SCContentFilter,
+        metrics: DisplayPixelMetrics,
+        configuration: SCStreamConfiguration,
+        output: CGImage
+    ) {
+        Log.screenshot.info(
+            "Display \(display.displayID, privacy: .public) frame=\(display.frame.width, privacy: .public)x\(display.frame.height, privacy: .public)pt SCDisplay=\(display.width, privacy: .public)x\(display.height, privacy: .public)pt pointPixelScale=\(filter.pointPixelScale, privacy: .public) computed=\(metrics.computedPixelSize.width, privacy: .public)x\(metrics.computedPixelSize.height, privacy: .public) native=\(metrics.nativePixelSize.width, privacy: .public)x\(metrics.nativePixelSize.height, privacy: .public) config=\(configuration.width, privacy: .public)x\(configuration.height, privacy: .public) output=\(output.width, privacy: .public)x\(output.height, privacy: .public)"
+        )
+        #if DEBUG
+        NSLog(
+            "Kaiming debug: Display \(display.displayID) frame=\(display.frame.width)x\(display.frame.height)pt SCDisplay=\(display.width)x\(display.height)pt pointPixelScale=\(filter.pointPixelScale) computed=\(metrics.computedPixelSize.width)x\(metrics.computedPixelSize.height) native=\(metrics.nativePixelSize.width)x\(metrics.nativePixelSize.height) config=\(configuration.width)x\(configuration.height) output=\(output.width)x\(output.height)"
+        )
+        #endif
+    }
+
     /// 一次性获取屏幕内容、冻结所有目标显示器，并（窗口模式时）列出候选窗口。
     ///
     /// - Parameter displayIDs: 需要冻结的显示器；传空数组表示全部。
@@ -152,21 +242,23 @@ enum ScreenCaptureService {
                 excludingApplications: excludedApplications,
                 exceptingWindows: []
             )
-            let configuration = SCStreamConfiguration()
-            configuration.width = display.width
-            configuration.height = display.height
-            configuration.showsCursor = showsCursor
-            configuration.capturesAudio = false
-            configuration.scalesToFit = false
-
+            let (configuration, metrics) = makeDisplayConfiguration(
+                display: display,
+                filter: filter,
+                showsCursor: showsCursor
+            )
             do {
                 let image = try await SCScreenshotManager.captureImage(
                     contentFilter: filter,
                     configuration: configuration
                 )
                 captures.append(DisplayCapture(displayID: display.displayID, image: image))
-                Log.screenshot.info(
-                    "Frozen display \(display.displayID, privacy: .public) at \(image.width, privacy: .public)x\(image.height, privacy: .public)"
+                logDisplayCapture(
+                    display: display,
+                    filter: filter,
+                    metrics: metrics,
+                    configuration: configuration,
+                    output: image
                 )
             } catch {
                 Log.screenshot.error(
@@ -221,18 +313,20 @@ enum ScreenCaptureService {
             excludingApplications: ownApplications(in: content),
             exceptingWindows: []
         )
-        let configuration = SCStreamConfiguration()
-        configuration.width = display.width
-        configuration.height = display.height
-        configuration.showsCursor = showsCursor
-        configuration.capturesAudio = false
-        configuration.scalesToFit = false
+        let (configuration, metrics) = makeDisplayConfiguration(
+            display: display,
+            filter: filter,
+            showsCursor: showsCursor
+        )
 
         let image: CGImage
         do {
             image = try await SCScreenshotManager.captureImage(
                 contentFilter: filter,
                 configuration: configuration
+            )
+            Log.screenshot.debug(
+                "Region frame display \(display.displayID, privacy: .public) config=\(configuration.width, privacy: .public)x\(configuration.height, privacy: .public) output=\(image.width, privacy: .public)x\(image.height, privacy: .public) scale=\(metrics.pointPixelScale, privacy: .public)"
             )
         } catch {
             Log.screenshot.error(
@@ -274,10 +368,15 @@ enum ScreenCaptureService {
         }
 
         let filter = SCContentFilter(desktopIndependentWindow: window)
-        let scale = max(backingScale, 1)
+        // 窗口截图同样优先使用 filter 的 pointPixelScale，backingScale 仅作兜底。
+        let filterScale = CGFloat(filter.pointPixelScale)
+        // pointPixelScale 是首选；backingScale 作为兜底，避免某些窗口 filter 返回 1 时丢掉 Retina 像素。
+        let scale = max(filterScale, CGFloat(backingScale), 1)
+        let windowPointSize = window.frame.size
         let configuration = SCStreamConfiguration()
-        configuration.width = max(1, Int((window.frame.width * scale).rounded()))
-        configuration.height = max(1, Int((window.frame.height * scale).rounded()))
+        configuration.width = max(1, Int((windowPointSize.width * scale).rounded()))
+        configuration.height = max(1, Int((windowPointSize.height * scale).rounded()))
+        configuration.captureResolution = .best
         configuration.showsCursor = showsCursor
         configuration.capturesAudio = false
         configuration.scalesToFit = false
@@ -291,7 +390,7 @@ enum ScreenCaptureService {
                 configuration: configuration
             )
             Log.screenshot.info(
-                "Window \(windowID, privacy: .public) captured at \(image.width, privacy: .public)x\(image.height, privacy: .public)"
+                "Window \(windowID, privacy: .public) frame=\(windowPointSize.width, privacy: .public)x\(windowPointSize.height, privacy: .public)pt filterScale=\(filter.pointPixelScale, privacy: .public) usedScale=\(scale, privacy: .public) config=\(configuration.width, privacy: .public)x\(configuration.height, privacy: .public) output=\(image.width, privacy: .public)x\(image.height, privacy: .public)"
             )
             return image
         } catch {

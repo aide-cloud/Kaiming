@@ -24,12 +24,6 @@ final class WallpaperManager: ObservableObject {
     @Published private(set) var screens: [ScreenInfo] = []
     /// 是否有进行中的壁纸写入 / 设置操作（UI 用于 loading 与防重复点击）。
     @Published private(set) var isBusy = false
-    /// `AppPaths.captures` 中最近 12 张截图（按修改时间倒序，缩略图已生成）。
-    @Published private(set) var recentCaptures: [WallpaperRecentCapture] = []
-    @Published private(set) var isLoadingCaptures = false
-    /// `AppPaths.captures` 存在但不可读时为 true，UI 会给出明确提示。
-    @Published private(set) var capturesDirectoryUnreadable = false
-
     /// 可选能力：文件夹轮换。状态只存在于本次运行的内存中，不新增 UserDefaults 键。
     @Published private(set) var isRotating = false
     @Published private(set) var rotationFolder: URL?
@@ -209,24 +203,6 @@ final class WallpaperManager: ObservableObject {
                 AppState.shared.flash("剪贴板中没有可用图片，请先复制一张图片", kind: .info)
                 Log.wallpaper.info("Clipboard contains no image")
             }
-        }
-    }
-
-    // MARK: - 最近截图
-
-    func loadRecentCaptures() {
-        guard !isLoadingCaptures else { return }
-        isLoadingCaptures = true
-        Task { [weak self] in
-            let captures = await WallpaperFileStore.listRecentCaptures()
-            guard let self else { return }
-            let capturesDirectory = AppPaths.captures
-            let directoryExists = FileManager.default.fileExists(atPath: capturesDirectory.path)
-            self.capturesDirectoryUnreadable = directoryExists
-                && !FileManager.default.isReadableFile(atPath: capturesDirectory.path)
-            self.recentCaptures = captures
-            self.isLoadingCaptures = false
-            Log.wallpaper.info("Loaded \(captures.count, privacy: .public) recent capture(s)")
         }
     }
 

@@ -1015,7 +1015,17 @@ extension NativeTextViewCoordinator {
             }
         }
         guard let target = WikiLinkService.resolveIdentifier(link: link, textView: textView, at: charIndex) else {
-            // Web link (URL-valued): returning false lets AppKit open the URL
+            // Web / file link (URL-valued). When the embedder supplied a
+            // callback it resolves and opens the target (relative file links
+            // included); otherwise preserve AppKit's historical URL opening.
+            if let onWebLinkClick, let url = Self.webLinkURL(from: link) {
+                (textView as? NativeTextView)?.linkClickDidNavigate = true
+                DispatchQueue.main.async {
+                    onWebLinkClick(url)
+                }
+                return true
+            }
+            // Returning false lets AppKit open the URL
             // (the mouseDown fallback mirrors that). Opening a link is navigation
             // too — flag it so mouseDown restores the pre-click caret.
             (textView as? NativeTextView)?.linkClickDidNavigate = true
@@ -1028,6 +1038,15 @@ extension NativeTextViewCoordinator {
             self.onLinkClick?(target)
         }
         return true
+    }
+
+    /// URL carried by a `.link` attribute. Wiki-link ids are Strings and are
+    /// resolved earlier, so a String reaching this helper is a URL string.
+    private static func webLinkURL(from link: Any) -> URL? {
+        if let url = link as? URL { return url }
+        if let nsURL = link as? NSURL { return nsURL as URL }
+        if let string = link as? String { return URL(string: string) }
+        return nil
     }
 
     /// Horizontal fraction (0 = leading, 1 = trailing) of the current click through the glyph at

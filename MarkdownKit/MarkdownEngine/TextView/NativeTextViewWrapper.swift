@@ -88,6 +88,11 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
     /// resolved opaque identifier (or the display name when no resolver
     /// was supplied).
     public var onLinkClick: ((String) -> Void)?
+    /// Fires when the user clicks a standard Markdown link (`[label](target)`).
+    /// The URL is passed exactly as parsed: relative file references stay
+    /// relative so the embedder can resolve them against the current document.
+    /// When `nil`, the historical AppKit URL-opening behavior is preserved.
+    public var onWebLinkClick: ((URL) -> Void)?
     /// Fires whenever the caret rect inside an active wiki-link changes,
     /// so embedders can position a follow-the-caret UI.
     public var onCaretRectChange: ((CGRect) -> Void)?
@@ -169,6 +174,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         isFocused: Binding<Bool>? = nil,
         onPasteImage: ((NSPasteboard) -> String?)? = nil,
         onLinkClick: ((String) -> Void)? = nil,
+        onWebLinkClick: ((URL) -> Void)? = nil,
         onCaretRectChange: ((CGRect) -> Void)? = nil,
         onTextMutation: ((MarkdownTextMutation) -> Void)? = nil,
         onBuildContextMenu: ((NSMenu, NSRange) -> NSMenu)? = nil,
@@ -198,6 +204,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         self.isFocused = isFocused
         self.onPasteImage = onPasteImage
         self.onLinkClick = onLinkClick
+        self.onWebLinkClick = onWebLinkClick
         self.onCaretRectChange = onCaretRectChange
         self.onTextMutation = onTextMutation
         self.onBuildContextMenu = onBuildContextMenu
@@ -351,6 +358,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         context.coordinator.textView = textView
         context.coordinator.wikiLinkMetadata = initialState.metadata
         context.coordinator.onCaretRectChange = onCaretRectChange
+        context.coordinator.onWebLinkClick = onWebLinkClick
         context.coordinator.onTextMutation = onTextMutation
         context.coordinator.onBuildContextMenu = onBuildContextMenu
         context.coordinator.onInlineSelectionChange = onInlineSelectionChange
@@ -756,6 +764,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         }
 
         context.coordinator.onCaretRectChange = onCaretRectChange
+        context.coordinator.onWebLinkClick = onWebLinkClick
         context.coordinator.onTextMutation = onTextMutation
         context.coordinator.onBuildContextMenu = onBuildContextMenu
         context.coordinator.onInlineSelectionChange = onInlineSelectionChange
@@ -772,6 +781,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
             fontSize: fontSize,
             isWikiLinkActive: $isWikiLinkActive,
             onLinkClick: onLinkClick,
+            onWebLinkClick: onWebLinkClick,
             onInlineSelectionChange: onInlineSelectionChange
         )
         coordinator.documentId = documentId

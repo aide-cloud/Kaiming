@@ -14,6 +14,8 @@ struct MarkdownWindowView: View {
     @StateObject private var model = MarkdownDocumentModel()
     @ObservedObject private var openRequest = MarkdownOpenRequest.shared
     @ObservedObject private var folderTree = MarkdownFolderTree.shared
+    @ObservedObject private var imageProvider = MarkdownImageProvider.shared
+    @StateObject private var linkStore = MarkdownLinkPreviewStore()
 
     @AppStorage("kaiming.markdown.sidebar.showsAllFiles") private var showsAllFiles = true
 
@@ -27,6 +29,9 @@ struct MarkdownWindowView: View {
     @State private var isSidebarVisible = false
     @State private var didInitialLoad = false
     @State private var preview: MarkdownPreview?
+    @State private var isInspectorVisible = false
+    @State private var htmlPreviews: [MarkdownHTMLPreview] = []
+    @State private var inspectorRefreshTask: Task<Void, Never>?
 
     private enum PendingAction {
         case newDocument
@@ -64,7 +69,7 @@ struct MarkdownWindowView: View {
                     Divider()
                 }
 
-                editorArea
+                richEditorArea
             }
         }
         .frame(minWidth: 900, minHeight: 480)
@@ -157,6 +162,15 @@ struct MarkdownWindowView: View {
             if rootURL != nil {
                 isSidebarVisible = true
             }
+            syncReferenceBase()
+            scheduleInspectorRefresh(immediate: true)
+        }
+        .onChange(of: model.documentURL) { _, _ in
+            syncReferenceBase()
+            scheduleInspectorRefresh(immediate: true)
+        }
+        .onChange(of: model.text) { _, _ in
+            scheduleInspectorRefresh()
         }
     }
 
@@ -181,13 +195,38 @@ struct MarkdownWindowView: View {
             fontSize: bodyFontSize,
             documentId: model.documentId,
             isFocused: $isEditorFocused,
+            onWebLinkClick: handleWebLinkClick,
             placeholder: placeholder,
             retainedScrollDocumentIds: [model.documentId]
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    /// 预览时编辑器仍留在视图层级里（隐藏且不接收事件），从而保留未保存内容与撤销栈。
+    /// 预览时编辑器仍留在视图层级里（隐藏且不接收事件），从而保留未保存内容与撤销栈；
+    /// 富内容 inspector 覆盖在编辑区右侧，不改变窗口/侧栏宽度，也不打断编辑。
+    private var richEditorArea: some View {
+        ZStack(alignment: .trailing) {
+            editorArea
+                // inspector 覆盖区让出空间，编辑内容重新排版而不是被遮住。
+                .padding(.trailing, isInspectorVisible ? 330 : 0)
+
+            if isInspectorVisible {
+                MarkdownInspectorView(
+                    linkStore: linkStore,
+                    htmlPreviews: htmlPreviews,
+                    onRefresh: { refreshRichContent(forceLinkRefresh: true) },
+                    onClose: {
+                        isInspectorVisible = false
+                        inspectorRefreshTask?.cancel()
+                    }
+                )
+                .transition(.move(edge: .trailing))
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .animation(.easeInOut(duration: 0.18), value: isInspectorVisible)
+    }
+
     private var editorArea: some View {
         ZStack {
             editor
@@ -259,6 +298,14 @@ struct MarkdownWindowView: View {
                 isActive: isSidebarVisible
             ) {
                 isSidebarVisible.toggle()
+            }
+
+            toolbarButton(
+                "sidebar.right",
+                help: isInspectorVisible ? "隐藏富内容 inspector" : "显示富内容 inspector（链接卡片 / HTML 预览）",
+                isActive: isInspectorVisible
+            ) {
+                toggleInspector()
             }
 
             toolbarDivider
@@ -422,6 +469,16 @@ struct MarkdownWindowView: View {
         guard !didInitialLoad else { return }
         didInitialLoad = true
 
+        #if DEBUG
+        // 仅调试构建：允许 CLI/快照直接载入一个 Markdown 文件与 inspector，
+        // 不改变 release 行为，也不依赖屏幕交互。
+        if let debugFile = debugMarkdownFileArgument {
+            folderTree.open(folder: debugFile.deletingLastPathComponent(), remember: false)
+            isSidebarVisible = true
+            loadMarkdownFile(debugFile)
+        }
+        #endif
+
         // 外部请求优先于上次打开的目录。
         consumeOpenRequest()
         if folderTree.rootURL == nil {
@@ -429,6 +486,111 @@ struct MarkdownWindowView: View {
         }
         if folderTree.rootURL != nil {
             isSidebarVisible = true
+        }
+
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--markdown-inspector") {
+            isInspectorVisible = true
+        }
+        #endif
+
+        syncReferenceBase()
+        if isInspectorVisible {
+            refreshRichContent()
+        }
+    }
+
+    #if DEBUG
+    private var debugMarkdownFileArgument: URL? {
+        let arguments = ProcessInfo.processInfo.arguments
+        guard let index = arguments.firstIndex(of: "--markdown-file"),
+              index + 1 < arguments.count else { return nil }
+        return URL(fileURLWithPath: arguments[index + 1])
+    }
+    #endif
+
+    private var referenceBaseURL: URL? {
+        if let documentURL = model.documentURL {
+            return documentURL.deletingLastPathComponent()
+        }
+        return folderTree.rootURL
+    }
+
+    private func syncReferenceBase() {
+        imageProvider.setBaseDirectory(referenceBaseURL)
+    }
+
+    // MARK: - 富内容 inspector
+
+    private func toggleInspector() {
+        isInspectorVisible.toggle()
+        if isInspectorVisible {
+            refreshRichContent()
+        } else {
+            inspectorRefreshTask?.cancel()
+            inspectorRefreshTask = nil
+        }
+    }
+
+    private func scheduleInspectorRefresh(immediate: Bool = false) {
+        guard isInspectorVisible else { return }
+        inspectorRefreshTask?.cancel()
+        if immediate {
+            refreshRichContent()
+            return
+        }
+        inspectorRefreshTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard !Task.isCancelled else { return }
+            refreshRichContent()
+        }
+    }
+
+    private func refreshRichContent(forceLinkRefresh: Bool = false) {
+        guard isInspectorVisible else { return }
+        let baseURL = referenceBaseURL
+        let blocks = MarkdownRichTextParser.htmlBlocks(in: model.text)
+        htmlPreviews = blocks.map { MarkdownHTMLPreviewRenderer.render(block: $0, baseURL: baseURL) }
+        let links = MarkdownRichTextParser.externalLinks(in: model.text)
+        linkStore.update(urls: links)
+        if forceLinkRefresh {
+            linkStore.refresh()
+        }
+    }
+
+    // MARK: - 链接
+
+    private func handleWebLinkClick(_ url: URL) {
+        switch MarkdownLinkRouter.route(url, baseDirectory: referenceBaseURL) {
+        case .external(let externalURL):
+            if !NSWorkspace.shared.open(externalURL) {
+                model.showStatus("无法打开链接：\(externalURL.absoluteString)", kind: .info)
+            }
+        case .internalFile(let fileURL):
+            openInternalReference(fileURL)
+        case .invalid(let message):
+            model.showStatus(message, kind: .info)
+        }
+    }
+
+    private func openInternalReference(_ url: URL) {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+            model.presentError("引用的文件不存在：\(url.lastPathComponent)")
+            return
+        }
+        if isDirectory.boolValue {
+            openFolder(url, projectMode: true)
+            return
+        }
+
+        switch MarkdownFileTypes.kind(of: url) {
+        case .markdown:
+            requestFileLoad(url)
+        case .text, .image, .other:
+            showPreview(url)
+        case .folder:
+            openFolder(url, projectMode: true)
         }
     }
 
@@ -490,6 +652,7 @@ struct MarkdownWindowView: View {
         closePreview()
         model.open(url: url)
         isEditorFocused = true
+        syncReferenceBase()
     }
 
     private func showPreview(_ url: URL) {

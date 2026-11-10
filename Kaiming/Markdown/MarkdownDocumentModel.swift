@@ -146,6 +146,7 @@ final class MarkdownDocumentModel: ObservableObject {
     private static func makeConfiguration() -> MarkdownEditorConfiguration {
         var configuration = MarkdownEditorConfiguration.default
         configuration.services = MarkdownEditorServices(
+            images: MarkdownImageProvider.shared,
             syntaxHighlighter: HighlightJSBridge(),
             latex: SwiftMathBridge()
         )

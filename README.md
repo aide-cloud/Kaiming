@@ -7,10 +7,10 @@ Kaiming 是一个 macOS 菜单栏常驻的四合一原生效率工具，用同�
 
 | 模块 | 能力 |
 |---|---|
-| 截图 | 区域 / 窗口 / 全屏三种模式，AppKit 覆盖层框选与标注；支持圆角与长截图（默认手动滚动、保留选区边框，可切换自动滚动）；完成后 PNG 自动进剪贴板，并可在面板内一键复制 / 保存 / 设为壁纸 |
+| 截图 | 区域 / 窗口 / 全屏三种模式，按屏幕原生像素（4K/Retina）采集；AppKit 覆盖层框选与标注；支持圆角与长截图（默认手动滚动、保留选区边框，可切换自动滚动）；完成后 PNG 自动进剪贴板，并可在面板内一键复制 / 保存 / 设为壁纸 |
 | 剪贴板 | 历史记录、类型识别、置顶、一键复制 / 清除；⌥⇧C 打开快捷选择窗口，键盘上下选中、Enter 复制 |
-| 壁纸 | 从剪贴板 / 图片文件 / 最近截图设置壁纸；支持视频动态壁纸（桌面层实验方案）；多显示器独立设置，重启后保持 |
-| Markdown | 独立 SwiftUI 窗口，Typora 式实时渲染（TextKit 2）；项目文件夹预览（完整文件树 / 仅 Markdown、文本只读预览、图片/二进制安全）、载入剪贴板 / 打开 / 编辑 / 保存；支持 `kaiming ./docs` 打开目录 |
+| 壁纸 | 从剪贴板 / 图片文件设置壁纸；支持视频动态壁纸（桌面层实验方案）；多显示器独立设置，重启后保持；不把截图历史作为壁纸来源 |
+| Markdown | 独立 SwiftUI 窗口，Typora 式实时渲染（TextKit 2）；项目文件夹预览、本地/远程图片、内部文件链接、外部链接预览卡片、HTML 块原生 inspector 渲染；载入剪贴板 / 打开 / 编辑 / 保存；支持 `kaiming ./docs` 打开目录 |
 | 应用中心 | 菜单栏「应用」页：已安装应用启动器、最近目录、打开目录；配合 CLI 直接进入 Markdown 文件树 |
 
 纯 Swift 6 + Apple 原生框架，**没有 WebView**，不引入跨平台抽象。
@@ -39,9 +39,9 @@ Kaiming 是一个 macOS 菜单栏常驻的四合一原生效率工具，用同�
 |---|---|
 | ![圆角选区](docs/screenshots/screenshot-rounded-overlay.png) | ![长截图](docs/screenshots/long-capture-manual-hud.png) |
 
-| 项目文件夹预览 + 文本只读预览 |
-|---|
-| ![项目预览](docs/screenshots/markdown-project-preview.png) |
+| 项目文件夹预览 + 文本只读预览 | 富内容 inspector（链接卡片 + HTML） |
+|---|---|
+| ![项目预览](docs/screenshots/markdown-project-preview.png) | ![富内容](docs/screenshots/markdown-rich-inspector.png) |
 
 | 偏好设置 |
 |---|
@@ -239,6 +239,8 @@ export APP_NOTARY_PASSWORD=xxxx-xxxx-xxxx-xxxx
 - macOS 14 + `LSUIElement` 下 SwiftUI `Settings` scene 的 `showSettingsWindow:` 会返回 handled
   但不创建窗口（本机实测），因此偏好设置改用独立 `Window(id: "settings")`，功能等价，
   ⌘, 仍可用；这是对规格中「Settings scene」的一处有据可查的工程偏离。
+- 截图按屏幕原生像素采集（本机 4K：3840×2160）；4K 长截图在高上限下内存占用较高。
+- Markdown 的 HTML 块在右侧 inspector 中**原生渲染**（`NSAttributedString(html:)`，无 WebView），编辑器内仍显示 HTML 源码；外部链接预览卡片也在 inspector；HTML 脚本/CSS、远程 img 不执行。
 - 视频壁纸是**桌面层窗口**实现（macOS 没有公开 API 把视频设为系统壁纸）：
   Kaiming 必须保持运行，退出即停止；桌面图标保持在视频上层。
 - 长截图默认进入**手动滚动**（保留选区边框，实时页面自行滚动）；点 HUD 的「自动滚动」才需要辅助功能（Accessibility）权限，未授权时保持手动。
