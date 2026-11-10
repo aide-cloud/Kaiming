@@ -44,6 +44,12 @@ else
   echo "==> Archiving ad-hoc signed (local testing only)"
 fi
 
+ARCH_ARGS=()
+if [ "${UNIVERSAL:-0}" = "1" ]; then
+  ARCH_ARGS=('ARCHS=arm64 x86_64' 'ONLY_ACTIVE_ARCH=NO')
+  echo "==> Building universal binary (arm64 + x86_64)"
+fi
+
 TMPDIR="$ROOT/build/tmp" CLANG_MODULE_CACHE_PATH="$ROOT/build/mcache" \
 xcodebuild archive \
   -project "$ROOT/Kaiming.xcodeproj" \
@@ -51,7 +57,8 @@ xcodebuild archive \
   -configuration Release \
   -archivePath "$ARCHIVE" \
   -derivedDataPath "$DERIVED" \
-  "${SIGN_ARGS[@]}"
+  ${SIGN_ARGS[@]+"${SIGN_ARGS[@]}"} \
+  ${ARCH_ARGS[@]+"${ARCH_ARGS[@]}"}
 
 APP_IN_ARCHIVE="$ARCHIVE/Products/Applications/Kaiming.app"
 if [ ! -d "$APP_IN_ARCHIVE" ]; then

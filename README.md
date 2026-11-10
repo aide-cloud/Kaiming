@@ -164,13 +164,32 @@ docs/                       # 架构、权限、分发、测试、第三方说�
 
 详见 [docs/architecture.md](docs/architecture.md)。
 
+## GitHub Actions 打包
+
+推送 `main`、`v*` tag 或手动运行 workflow 时，GitHub Actions 会在 `macos-15` 上：
+
+1. 选择 Xcode 16+；
+2. 构建 **universal（arm64 + x86_64）** Release 归档；
+3. 生成 `Kaiming-<version>.zip`、`.dmg`、`SHA256SUMS.txt`；
+4. 上传 artifact；tag 构建自动发布到 GitHub Release。
+
+工作流：[`.github/workflows/package.yml`](.github/workflows/package.yml)，
+说明见 [docs/ci.md](docs/ci.md)。CI 产物为 ad-hoc 签名，正式分发仍需 Developer ID +
+公证（见分发文档）。
+
 ## 分发
 
 ```bash
 # 1) Release 归档（默认 ad-hoc 签名）
 ./Scripts/archive.sh
 
-# 2) 使用 Developer ID 签名 + 公证
+# 2) 通用二进制归档
+UNIVERSAL=1 ./Scripts/archive.sh
+
+# 3) 生成 ZIP/DMG/校验和
+./Scripts/package.sh build/export/Kaiming.app build/dist
+
+# 4) 使用 Developer ID 签名 + 公证
 export DEVELOPMENT_TEAM=ABCDE12345
 export APPLE_ID=you@example.com
 export APPLE_TEAM_ID=ABCDE12345
