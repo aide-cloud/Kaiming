@@ -4,6 +4,7 @@ import SwiftUI
 /// Markdown 窗口左侧目录树。宽度固定 260pt（需求区间 240–280pt）。
 struct MarkdownSidebarView: View {
     @ObservedObject var tree: MarkdownFolderTree
+    @Binding var showsAllFiles: Bool
 
     let currentFileURL: URL?
     let onOpenFolder: () -> Void
@@ -14,6 +15,10 @@ struct MarkdownSidebarView: View {
         VStack(spacing: 0) {
             header
             Divider()
+
+            if tree.rootURL != nil {
+                filterPicker
+            }
 
             if let message = tree.errorMessage {
                 errorBanner(message)
@@ -45,7 +50,7 @@ struct MarkdownSidebarView: View {
             }
             .disabled(tree.rootURL == nil)
 
-            headerButton("folder.badge.plus", help: "打开文件夹…", action: onOpenFolder)
+            headerButton("folder.badge.plus", help: "打开项目文件夹…", action: onOpenFolder)
 
             headerButton("sidebar.left", help: "隐藏目录树", action: onClose)
         }
@@ -69,6 +74,24 @@ struct MarkdownSidebarView: View {
         .accessibilityLabel(help)
     }
 
+    private var filterPicker: some View {
+        Picker("文件范围", selection: $showsAllFiles) {
+            Text("全部文件").tag(true)
+            Text("仅 Markdown").tag(false)
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .controlSize(.small)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .help("「全部文件」显示项目内所有文件；「仅 Markdown」只保留文件夹与 .md/.markdown")
+    }
+
+    private var visibleRootChildren: [MarkdownTreeNode] {
+        guard let rootURL = tree.rootURL else { return [] }
+        return tree.visibleChildren(of: rootURL, showsAllFiles: showsAllFiles) ?? []
+    }
+
     // MARK: - 内容
 
     @ViewBuilder
@@ -83,6 +106,8 @@ struct MarkdownSidebarView: View {
             } else {
                 emptyFolderState
             }
+        } else if visibleRootChildren.isEmpty {
+            markdownOnlyEmptyState
         } else {
             treeScroll
         }
@@ -91,11 +116,12 @@ struct MarkdownSidebarView: View {
     private var treeScroll: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 1) {
-                ForEach(tree.rootChildren) { node in
+                ForEach(visibleRootChildren) { node in
                     MarkdownTreeRow(
                         node: node,
                         depth: 0,
                         tree: tree,
+                        showsAllFiles: showsAllFiles,
                         currentFileURL: currentFileURL,
                         onSelectFile: onSelectFile
                     )
@@ -112,16 +138,16 @@ struct MarkdownSidebarView: View {
                 .font(.system(size: 30, weight: .light))
                 .foregroundStyle(.secondary)
 
-            Text("尚未打开文件夹")
+            Text("尚未打开项目")
                 .font(.system(size: 12, weight: .medium))
 
-            Text("打开一个目录，即可在这里浏览其中的 Markdown 文件。")
+            Text("打开一个文件夹作为项目，即可浏览其中的所有文件。")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Button("打开文件夹…", action: onOpenFolder)
+            Button("打开项目文件夹…", action: onOpenFolder)
                 .controlSize(.small)
         }
         .padding(18)
@@ -141,6 +167,29 @@ struct MarkdownSidebarView: View {
 
     private var emptyFolderState: some View {
         VStack(spacing: 8) {
+            Image(systemName: "folder")
+                .font(.system(size: 26, weight: .light))
+                .foregroundStyle(.secondary)
+
+            Text("此文件夹为空")
+                .font(.system(size: 11, weight: .medium))
+                .multilineTextAlignment(.center)
+
+            Text("目录中没有可显示的文件或子文件夹。")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+
+            Button("重新读取") {
+                tree.refresh()
+            }
+            .controlSize(.small)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var markdownOnlyEmptyState: some View {
+        VStack(spacing: 8) {
             Image(systemName: "doc.text.magnifyingglass")
                 .font(.system(size: 26, weight: .light))
                 .foregroundStyle(.secondary)
@@ -149,12 +198,14 @@ struct MarkdownSidebarView: View {
                 .font(.system(size: 11, weight: .medium))
                 .multilineTextAlignment(.center)
 
-            Text("只显示文件夹与 .md / .markdown 文件。")
+            Text("项目里还有其他文件，切换到「全部文件」即可查看。")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
 
-            Button("重新读取") {
-                tree.refresh()
+            Button("显示全部文件") {
+                showsAllFiles = true
             }
             .controlSize(.small)
         }
@@ -226,6 +277,7 @@ private struct MarkdownTreeRow: View {
     let node: MarkdownTreeNode
     let depth: Int
     @ObservedObject var tree: MarkdownFolderTree
+    let showsAllFiles: Bool
     let currentFileURL: URL?
     let onSelectFile: (URL) -> Void
 
@@ -247,9 +299,10 @@ private struct MarkdownTreeRow: View {
             rowContent
 
             if node.isDirectory, isExpanded {
-                if let children = tree.children(of: node.url) {
+                if let rawChildren = tree.children(of: node.url) {
+                    let children = tree.visibleChildren(of: node.url, showsAllFiles: showsAllFiles) ?? []
                     if children.isEmpty {
-                        Text("空文件夹")
+                        Text(rawChildren.isEmpty ? "空文件夹" : "无 Markdown 文件")
                             .font(.system(size: 10))
                             .foregroundStyle(.tertiary)
                             .padding(.leading, leadingPadding + 26)
@@ -260,6 +313,7 @@ private struct MarkdownTreeRow: View {
                                 node: child,
                                 depth: depth + 1,
                                 tree: tree,
+                                showsAllFiles: showsAllFiles,
                                 currentFileURL: currentFileURL,
                                 onSelectFile: onSelectFile
                             )
@@ -291,7 +345,7 @@ private struct MarkdownTreeRow: View {
             HStack(spacing: 4) {
                 disclosureIcon
 
-                Image(systemName: node.isDirectory ? "folder" : "doc.text")
+                Image(systemName: node.kind.symbolName)
                     .font(.system(size: 11))
                     .frame(width: 14)
                     .foregroundStyle(

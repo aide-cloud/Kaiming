@@ -75,11 +75,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case "region": .region
             default: .fullScreen
             }
-            // 测试实例不污染用户剪贴板/声音；截图历史写入当前 CFFIXED_USER_HOME。
-            SettingsStore.shared.copyScreenshotToClipboard = false
-            SettingsStore.shared.playCaptureSound = false
+            // 测试只覆盖本次采集行为，绝不修改 SettingsStore/UserDefaults。
+            // 默认不写剪贴板；加 --capture-test-copy 可显式验证“截图进剪贴板”链路。
+            let copyToClipboard = ProcessInfo.processInfo.arguments.contains("--capture-test-copy")
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                ScreenshotCoordinator.shared.start(mode: mode)
+                ScreenshotCoordinator.shared.startForTesting(
+                    mode: mode,
+                    copyToClipboard: copyToClipboard,
+                    playSound: false
+                )
             }
         }
         if let index = ProcessInfo.processInfo.arguments.firstIndex(of: "--open-folder"),
@@ -220,7 +224,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func startPermissionWatchdogIfNeeded() {
         guard !ScreenCapturePermission.isGranted else { return }
         permissionWatchdog?.cancel()
-        permissionWatchdog = Task { @MainActor [weak self] in
+        permissionWatchdog = Task { @MainActor in
             let settingsBundleIDs: Set<String> = [
                 "com.apple.systempreferences",
                 "com.apple.SystemSettings",
@@ -230,7 +234,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 750_000_000)
-                guard let self else { return }
 
                 if ScreenCapturePermission.isGranted {
                     UserDefaults.standard.set(false, forKey: "kaiming.permission.autoRelaunchAttempted")

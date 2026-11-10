@@ -27,10 +27,6 @@ struct WallpaperPanelView: View {
     @State private var selectedScreenIDs: Set<String> = []
     @State private var previewCapture: WallpaperRecentCapture?
     @State private var mediaKind: WallpaperMediaKind = .image
-    @State private var isChoosingImage = false
-    @State private var isChoosingVideo = false
-    @State private var isChoosingRotationFolder = false
-    @State private var rotationFolder: URL?
     @State private var rotationMinutes = 5
     @State private var isRotationExpanded = false
 
@@ -290,19 +286,12 @@ struct WallpaperPanelView: View {
                 .disabled(manager.isBusy || selectedScreenIDs.isEmpty)
 
                 Button {
-                    isChoosingImage = true
+                    chooseImageFile()
                 } label: {
                     Label("选择图片…", systemImage: "photo.badge.plus")
                         .font(.system(size: 11))
                 }
                 .disabled(manager.isBusy || selectedScreenIDs.isEmpty)
-                .fileImporter(
-                    isPresented: $isChoosingImage,
-                    allowedContentTypes: [.image],
-                    allowsMultipleSelection: false
-                ) { result in
-                    handleImageSelection(result)
-                }
 
                 Spacer(minLength: 0)
             }
@@ -319,19 +308,12 @@ struct WallpaperPanelView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Button {
-                    isChoosingVideo = true
+                    chooseVideoFile()
                 } label: {
                     Label("选择视频…", systemImage: "film.badge.plus")
                         .font(.system(size: 11))
                 }
                 .disabled(manager.isBusy || selectedScreenIDs.isEmpty)
-                .fileImporter(
-                    isPresented: $isChoosingVideo,
-                    allowedContentTypes: [.movie, .video],
-                    allowsMultipleSelection: false
-                ) { result in
-                    handleVideoSelection(result)
-                }
 
                 if manager.isDynamicWallpaperActive {
                     Text("已启用")
@@ -400,23 +382,17 @@ struct WallpaperPanelView: View {
         return String(format: "%d:%02d", totalSeconds / 60, totalSeconds % 60)
     }
 
-    private func handleImageSelection(_ result: Result<[URL], Error>) {
-        switch result {
-        case .success(let urls):
+    private func chooseImageFile() {
+        WallpaperFilePicker.shared.chooseImage { urls in
             guard let url = urls.first else { return }
             manager.setWallpaper(fileURL: url, screenIDs: selectedScreenIDs)
-        case .failure(let error):
-            AppState.shared.flash("选择图片失败：\(error.localizedDescription)", kind: .error)
         }
     }
 
-    private func handleVideoSelection(_ result: Result<[URL], Error>) {
-        switch result {
-        case .success(let urls):
+    private func chooseVideoFile() {
+        WallpaperFilePicker.shared.chooseVideo { urls in
             guard let url = urls.first else { return }
             manager.startDynamicWallpaper(fileURL: url, screenIDs: selectedScreenIDs)
-        case .failure(let error):
-            AppState.shared.flash("选择视频失败：\(error.localizedDescription)", kind: .error)
         }
     }
 
@@ -576,23 +552,12 @@ struct WallpaperPanelView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 8) {
                         Button("选择文件夹…") {
-                            isChoosingRotationFolder = true
+                            chooseRotationFolder()
                         }
                         .controlSize(.small)
                         .disabled(manager.isRotating)
-                        .fileImporter(
-                            isPresented: $isChoosingRotationFolder,
-                            allowedContentTypes: [.folder],
-                            allowsMultipleSelection: false
-                        ) { result in
-                            handleRotationFolderSelection(result)
-                        }
 
-                        Text(
-                            manager.rotationFolder?.lastPathComponent
-                                ?? rotationFolder?.lastPathComponent
-                                ?? "未选择文件夹"
-                        )
+                        Text(manager.rotationFolder?.lastPathComponent ?? "未选择文件夹")
                             .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -633,15 +598,15 @@ struct WallpaperPanelView: View {
                             Spacer(minLength: 0)
 
                             Button("开始轮换") {
-                                guard let rotationFolder else { return }
+                                guard let folder = manager.rotationFolder else { return }
                                 manager.startRotation(
-                                    folder: rotationFolder,
+                                    folder: folder,
                                     interval: TimeInterval(rotationMinutes * 60),
                                     screenIDs: selectedScreenIDs
                                 )
                             }
                             .controlSize(.small)
-                            .disabled(rotationFolder == nil || selectedScreenIDs.isEmpty || manager.isBusy)
+                            .disabled(manager.rotationFolder == nil || selectedScreenIDs.isEmpty || manager.isBusy)
                         }
                     }
                 }
@@ -652,13 +617,10 @@ struct WallpaperPanelView: View {
         .background(cardBackground)
     }
 
-    private func handleRotationFolderSelection(_ result: Result<[URL], Error>) {
-        switch result {
-        case .success(let urls):
+    private func chooseRotationFolder() {
+        WallpaperFilePicker.shared.chooseFolder { urls in
             guard let url = urls.first else { return }
-            rotationFolder = url
-        case .failure(let error):
-            AppState.shared.flash("选择文件夹失败：\(error.localizedDescription)", kind: .error)
+            manager.selectRotationFolder(url)
         }
     }
 

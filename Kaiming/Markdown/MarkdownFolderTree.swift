@@ -1,12 +1,14 @@
 import Foundation
 
-/// 侧边栏目录树中的一个条目（文件夹或 Markdown 文件）。
+/// 侧边栏项目树中的一个条目（文件夹或任意类型的文件）。
 struct MarkdownTreeNode: Identifiable, Equatable, Sendable {
     let url: URL
     let name: String
-    let isDirectory: Bool
+    let kind: MarkdownFileKind
 
     var id: URL { url }
+
+    var isDirectory: Bool { kind == .folder }
 }
 
 /// 目录读取的后台结果。`Result` 的 Failure 必须是 `Error`，这里用专用枚举更直白。
@@ -15,9 +17,10 @@ private enum MarkdownDirectoryReadResult: Sendable {
     case failure(String)
 }
 
-/// 侧边栏目录树的数据源。
+/// 侧边栏项目树的数据源。
 ///
-/// - 只读取目录与 `.md` / `.markdown` 文件，文件夹优先排序；
+/// - 读取任意目录下的所有文件夹与文件（项目预览模式），并按类型分类；
+/// - 文件夹优先排序，`仅 Markdown` 过滤由 ``visibleChildren(of:showsAllFiles:)`` 提供；
 /// - 根目录打开后自动展开，子目录在第一次展开时才读取（懒加载）；
 /// - 目录读取在后台队列完成，主线程只更新 `@Published` 状态；
 /// - 最近打开的目录保存在模块自己的 `UserDefaults` 键里。
@@ -52,6 +55,13 @@ final class MarkdownFolderTree: ObservableObject {
 
     func children(of directory: URL) -> [MarkdownTreeNode]? {
         childrenByDirectory[directory]
+    }
+
+    /// 按侧边栏当前过滤模式返回可见子项；`nil` 表示该目录尚未加载。
+    func visibleChildren(of directory: URL, showsAllFiles: Bool) -> [MarkdownTreeNode]? {
+        guard let children = childrenByDirectory[directory] else { return nil }
+        guard !showsAllFiles else { return children }
+        return children.filter { $0.isDirectory || $0.kind == .markdown }
     }
 
     func isExpanded(_ directory: URL) -> Bool {
@@ -95,7 +105,7 @@ final class MarkdownFolderTree: ObservableObject {
         }
 
         loadChildren(of: standardized, force: true)
-        Log.markdown.info("Opened Markdown folder \(standardized.path, privacy: .public)")
+        Log.markdown.info("Opened project folder \(standardized.path, privacy: .public)")
     }
 
     /// 重新读取根目录以及所有已经加载过的子目录，展开状态保持不变。
@@ -106,7 +116,7 @@ final class MarkdownFolderTree: ObservableObject {
         for directory in directories {
             loadChildren(of: directory, force: true)
         }
-        Log.markdown.info("Refreshed Markdown folder tree at \(rootURL.path, privacy: .public)")
+        Log.markdown.info("Refreshed project folder tree at \(rootURL.path, privacy: .public)")
     }
 
     func toggleDirectory(_ url: URL) {
@@ -193,23 +203,16 @@ final class MarkdownFolderTree: ObservableObject {
                     let values = try? url.resourceValues(forKeys: keys)
                     // 跳过符号链接，避免目录环。
                     if values?.isSymbolicLink == true { continue }
-                    if values?.isDirectory == true {
-                        nodes.append(
-                            MarkdownTreeNode(
-                                url: url.standardizedFileURL,
-                                name: url.lastPathComponent,
-                                isDirectory: true
-                            )
+                    let kind: MarkdownFileKind = values?.isDirectory == true
+                        ? .folder
+                        : MarkdownFileTypes.kind(of: url)
+                    nodes.append(
+                        MarkdownTreeNode(
+                            url: url.standardizedFileURL,
+                            name: url.lastPathComponent,
+                            kind: kind
                         )
-                    } else if MarkdownFileTypes.isMarkdownFile(url) {
-                        nodes.append(
-                            MarkdownTreeNode(
-                                url: url.standardizedFileURL,
-                                name: url.lastPathComponent,
-                                isDirectory: false
-                            )
-                        )
-                    }
+                    )
                 }
 
                 nodes.sort { lhs, rhs in

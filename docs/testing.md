@@ -39,7 +39,8 @@ APP=build/dd/Build/Products/Debug/Kaiming.app
 "$APP/Contents/MacOS/Kaiming" --snapshot-clipboard-picker /tmp/picker.png
 "$APP/Contents/MacOS/Kaiming" --snapshot-markdown /tmp/markdown.png
 "$APP/Contents/MacOS/Kaiming" --snapshot-settings /tmp/settings.png
-"$APP/Contents/MacOS/Kaiming" --capture-test full      # 真实全屏截图（测试实例不写用户剪贴板）
+"$APP/Contents/MacOS/Kaiming" --capture-test full      # 真实全屏截图（本次覆盖不复制，不改持久化设置）
+"$APP/Contents/MacOS/Kaiming" --capture-test full --capture-test-copy  # 显式验证截图→剪贴板链路
 ```
 
 `--snapshot-*` 在进程内用真实 `NSWindow + NSHostingView` 渲染，不依赖屏幕录制权限。
@@ -162,6 +163,9 @@ log show --info --debug --last 5m --predicate 'subsystem == "com.kaiming.app"' -
 - [ ] 工具栏「打开文件夹…」选择目录后侧边栏显示文件树，文件夹优先，只有 `.md/.markdown`。
 - [ ] 点击文件载入、当前文件高亮、展开/折叠、刷新、侧边栏隐藏/显示。
 - [ ] 外部打开：`./Scripts/kaiming ./docs` 或 `--open-folder "$PWD/docs"` 打开目录树。
+- [ ] 「打开项目文件夹…」选择任意项目根，默认「全部文件」，文件夹/文件带类型图标。
+- [ ] 点击 `.md` 正常编辑；点击 `.txt/.swift/.json` 显示只读纯文本预览；图片/二进制不崩溃。
+- [ ] 脏 Markdown 下预览其他文件不会丢失未保存内容；切回/载入 .md 仍有确认。
 - [ ] 脏文档时仅切目录不弹确认；载入文件前弹确认，取消后内容保留。
 - [ ] `./Scripts/install-cli.sh` 后 `kaiming ./docs` 冷启动/热启动均能打开。
 
@@ -171,13 +175,16 @@ log show --info --debug --last 5m --predicate 'subsystem == "com.kaiming.app"' -
 - [ ] 88+ 应用时滚动流畅；刷新不卡主线程。
 
 ### 视频动态壁纸
-- [ ] 壁纸页切换「视频」，选择 MP4/MOV 后显示首帧、时长、分辨率。
+- [ ] 壁纸页切换「视频」，点「选择视频…」后 NSOpenPanel 保持打开，popover 关闭不会取消；选中 MP4/MOV 后显示首帧、时长、分辨率。
+- [ ] 图片/轮换文件夹选择同样不会被 popover 关闭取消。
 - [ ] 启用后桌面层窗口出现（level = desktopWindow+1），循环静音播放；桌面图标仍在视频上方。
 - [ ] 停止后窗口消失；退出 App 后停止；重启 App 恢复上次启用状态。
 - [ ] 应用静态壁纸会停止对应屏动态壁纸；无系统「视频壁纸」API 的说明可见。
 
 ### 截图圆角 / 长截图
 - [ ] 圆角 0–48pt 可调，预览与导出 PNG 一致，圆角外透明。
-- [ ] 区域长截图：自动滚动需辅助功能权限；未授权时提示并可手动滚动拼接。
+- [ ] 区域长截图：点击后**直接进入手动滚动**，选区边框持续可见；用户滚动实时页面，HUD 显示采集进度。
+- [ ] HUD「自动滚动」：未授权辅助功能时提示并保持手动；授权后自动滚动并与已拼接内容连续。
+- [ ] 完成/取消/自动无变化/手动长时间无变化/20000px 上限均正确停止并进入预览确认。
 - [ ] 拼接结果无重复内容/无断裂；无变化、超过 20000px、Esc 取消均正确提示。
 - [ ] 长截图结果进入预览确认，之后正常写剪贴板/历史/自动保存。

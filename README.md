@@ -7,10 +7,10 @@ Kaiming 是一个 macOS 菜单栏常驻的四合一原生效率工具，用同�
 
 | 模块 | 能力 |
 |---|---|
-| 截图 | 区域 / 窗口 / 全屏三种模式，AppKit 覆盖层框选与标注，完成后 PNG 自动进剪贴板，并可在面板内一键复制 / 保存 / 设为壁纸 |
+| 截图 | 区域 / 窗口 / 全屏三种模式，AppKit 覆盖层框选与标注；支持圆角与长截图（默认手动滚动、保留选区边框，可切换自动滚动）；完成后 PNG 自动进剪贴板，并可在面板内一键复制 / 保存 / 设为壁纸 |
 | 剪贴板 | 历史记录、类型识别、置顶、一键复制 / 清除；⌥⇧C 打开快捷选择窗口，键盘上下选中、Enter 复制 |
 | 壁纸 | 从剪贴板 / 图片文件 / 最近截图设置壁纸；支持视频动态壁纸（桌面层实验方案）；多显示器独立设置，重启后保持 |
-| Markdown | 独立 SwiftUI 窗口，Typora 式实时渲染（TextKit 2）；目录树侧边栏、载入剪贴板 / 打开 / 编辑 / 保存；支持 `kaiming ./docs` 打开目录 |
+| Markdown | 独立 SwiftUI 窗口，Typora 式实时渲染（TextKit 2）；项目文件夹预览（完整文件树 / 仅 Markdown、文本只读预览、图片/二进制安全）、载入剪贴板 / 打开 / 编辑 / 保存；支持 `kaiming ./docs` 打开目录 |
 | 应用中心 | 菜单栏「应用」页：已安装应用启动器、最近目录、打开目录；配合 CLI 直接进入 Markdown 文件树 |
 
 纯 Swift 6 + Apple 原生框架，**没有 WebView**，不引入跨平台抽象。
@@ -35,9 +35,13 @@ Kaiming 是一个 macOS 菜单栏常驻的四合一原生效率工具，用同�
 |---|---|
 | ![剪贴板](docs/screenshots/panel-clipboard.png) | ![壁纸](docs/screenshots/panel-wallpaper.png) |
 
-| 截图圆角 + 标注 | 长截图自动拼接 |
+| 截图圆角 + 标注 | 长截图（手动优先） |
 |---|---|
-| ![圆角选区](docs/screenshots/screenshot-rounded-overlay.png) | ![长截图](docs/screenshots/long-screenshot-hud.png) |
+| ![圆角选区](docs/screenshots/screenshot-rounded-overlay.png) | ![长截图](docs/screenshots/long-capture-manual-hud.png) |
+
+| 项目文件夹预览 + 文本只读预览 |
+|---|
+| ![项目预览](docs/screenshots/markdown-project-preview.png) |
 
 | 偏好设置 |
 |---|
@@ -237,7 +241,8 @@ export APP_NOTARY_PASSWORD=xxxx-xxxx-xxxx-xxxx
   ⌘, 仍可用；这是对规格中「Settings scene」的一处有据可查的工程偏离。
 - 视频壁纸是**桌面层窗口**实现（macOS 没有公开 API 把视频设为系统壁纸）：
   Kaiming 必须保持运行，退出即停止；桌面图标保持在视频上层。
-- 长截图的**自动滚动**需要辅助功能（Accessibility）权限；未授权时可使用手动滚动拼接。
+- 长截图默认进入**手动滚动**（保留选区边框，实时页面自行滚动）；点 HUD 的「自动滚动」才需要辅助功能（Accessibility）权限，未授权时保持手动。
+- 壁纸的图片/视频选择使用 AppKit NSOpenPanel，菜单栏 popover 关闭不会取消选择。
 - 应用中心只扫描 `/Applications`、`/System/Applications`、`~/Applications` 的顶层与二级 `.app`，不索引 Spotlight 全盘应用。
 - 未实现云端同步/多设备历史；所有数据仅本机。
 

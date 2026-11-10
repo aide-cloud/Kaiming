@@ -15,11 +15,28 @@ final class ScreenshotCoordinator: ObservableObject {
 
     private var activeOverlay: CaptureOverlayController?
 
+    /// 仅测试采集使用：本次运行覆盖剪贴板/声音，不写 UserDefaults。
+    private var testClipboardOverride: Bool?
+    private var testSoundOverride: Bool?
+
     private init() {}
 
     // MARK: - 入口
 
     func start(mode: CaptureMode) {
+        testClipboardOverride = nil
+        testSoundOverride = nil
+        begin(mode)
+    }
+
+    /// DEBUG 测试入口：不修改 SettingsStore/UserDefaults，只覆盖本次采集行为。
+    func startForTesting(mode: CaptureMode, copyToClipboard: Bool, playSound: Bool) {
+        testClipboardOverride = copyToClipboard
+        testSoundOverride = playSound
+        begin(mode)
+    }
+
+    private func begin(_ mode: CaptureMode) {
         guard !isCapturing else {
             AppState.shared.flash("正在截图，请先完成或取消当前截图。", kind: .info)
             return
@@ -165,7 +182,10 @@ final class ScreenshotCoordinator: ObservableObject {
             )
         }
 
-        if settings.copyScreenshotToClipboard {
+        let copyToClipboard = testClipboardOverride ?? settings.copyScreenshotToClipboard
+        let playCaptureSound = testSoundOverride ?? settings.playCaptureSound
+
+        if copyToClipboard {
             do {
                 try copyToPasteboard(image: image, format: settings.screenshotFormat)
                 Log.screenshot.info("Capture copied to pasteboard")
@@ -193,14 +213,14 @@ final class ScreenshotCoordinator: ObservableObject {
             }
         }
 
-        if settings.playCaptureSound {
+        if playCaptureSound {
             NSSound(named: "Glass")?.play()
         }
 
         AppState.shared.recordCapture(nsImage)
 
         if problems.isEmpty {
-            AppState.shared.flash(successMessage(settings: settings), kind: .success)
+            AppState.shared.flash(successMessage(settings: settings, copyToClipboard: copyToClipboard), kind: .success)
             Log.screenshot.info(
                 "Capture completed mode=\(mode.rawValue, privacy: .public) clipboard=\(settings.copyScreenshotToClipboard, privacy: .public) autoSave=\(settings.autoSaveScreenshots, privacy: .public)"
             )
@@ -212,13 +232,16 @@ final class ScreenshotCoordinator: ObservableObject {
             Log.screenshot.error("Capture completed with problems: \(problems.joined(separator: ", "), privacy: .public)")
         }
 
+        testClipboardOverride = nil
+        testSoundOverride = nil
+
         // 权限状态可能刚被系统更新，顺手刷新面板横幅。
         AppState.shared.refreshPermission()
     }
 
-    private func successMessage(settings: SettingsStore) -> String {
+    private func successMessage(settings: SettingsStore, copyToClipboard: Bool) -> String {
         var destinations: [String] = []
-        if settings.copyScreenshotToClipboard {
+        if copyToClipboard {
             destinations.append("已复制到剪贴板")
         }
         if settings.autoSaveScreenshots {

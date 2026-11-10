@@ -15,6 +15,8 @@ struct MarkdownWindowView: View {
     @ObservedObject private var openRequest = MarkdownOpenRequest.shared
     @ObservedObject private var folderTree = MarkdownFolderTree.shared
 
+    @AppStorage("kaiming.markdown.sidebar.showsAllFiles") private var showsAllFiles = true
+
     @State private var isImporting = false
     @State private var importMode: ImportMode = .markdownFiles
     @State private var isExporting = false
@@ -24,6 +26,7 @@ struct MarkdownWindowView: View {
     @State private var isEditorFocused = true
     @State private var isSidebarVisible = false
     @State private var didInitialLoad = false
+    @State private var preview: MarkdownPreview?
 
     private enum PendingAction {
         case newDocument
@@ -35,6 +38,7 @@ struct MarkdownWindowView: View {
     private enum ImportMode {
         case markdownFiles
         case folder
+        case projectFolder
     }
 
     var body: some View {
@@ -51,15 +55,16 @@ struct MarkdownWindowView: View {
                 if isSidebarVisible {
                     MarkdownSidebarView(
                         tree: folderTree,
-                        currentFileURL: model.documentURL,
-                        onOpenFolder: { beginImport(.folder) },
-                        onSelectFile: { requestFileLoad($0) },
+                        showsAllFiles: $showsAllFiles,
+                        currentFileURL: preview?.url ?? model.documentURL,
+                        onOpenFolder: { beginImport(.projectFolder) },
+                        onSelectFile: { handleFileSelection($0) },
                         onClose: { isSidebarVisible = false }
                     )
                     Divider()
                 }
 
-                editor
+                editorArea
             }
         }
         .frame(minWidth: 900, minHeight: 480)
@@ -97,24 +102,26 @@ struct MarkdownWindowView: View {
         }
         .fileImporter(
             isPresented: $isImporting,
-            allowedContentTypes: importMode == .folder ? [.folder] : MarkdownFileTypes.importable,
+            allowedContentTypes: importMode == .markdownFiles ? MarkdownFileTypes.importable : [.folder],
             allowsMultipleSelection: false
         ) { result in
             let mode = importMode
             switch result {
             case .success(let urls):
                 guard let url = urls.first else {
-                    model.presentError(mode == .folder ? "没有选择文件夹。" : "没有选择文件。")
+                    model.presentError(mode == .markdownFiles ? "没有选择文件。" : "没有选择文件夹。")
                     return
                 }
                 switch mode {
                 case .folder:
-                    openFolder(url)
+                    openFolder(url, projectMode: false)
+                case .projectFolder:
+                    openFolder(url, projectMode: true)
                 case .markdownFiles:
-                    model.open(url: url)
+                    loadMarkdownFile(url)
                 }
             case .failure(let error):
-                let prefix = mode == .folder ? "打开文件夹失败" : "打开文件失败"
+                let prefix = mode == .markdownFiles ? "打开文件失败" : "打开文件夹失败"
                 model.presentError("\(prefix)：\(error.localizedDescription)")
             }
         }
@@ -180,6 +187,26 @@ struct MarkdownWindowView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    /// 预览时编辑器仍留在视图层级里（隐藏且不接收事件），从而保留未保存内容与撤销栈。
+    private var editorArea: some View {
+        ZStack {
+            editor
+                .opacity(preview == nil ? 1 : 0)
+                .allowsHitTesting(preview == nil)
+
+            if let preview {
+                MarkdownPreviewView(
+                    preview: preview,
+                    markdownIsDirty: model.isDirty,
+                    onClose: closePreview,
+                    onOpenExternal: { openWithDefaultApp(preview.url) },
+                    onReveal: { revealInFinder(preview.url) }
+                )
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
     private var placeholder: NSAttributedString? {
         guard model.text.isEmpty else { return nil }
         return NSAttributedString(
@@ -220,6 +247,10 @@ struct MarkdownWindowView: View {
 
             toolbarButton("folder.badge.plus", help: "打开文件夹…") {
                 beginImport(.folder)
+            }
+
+            toolbarButton("folder.badge.gearshape", help: "打开项目文件夹…") {
+                beginImport(.projectFolder)
             }
 
             toolbarButton(
@@ -368,13 +399,15 @@ struct MarkdownWindowView: View {
     private func perform(_ action: PendingAction) {
         switch action {
         case .newDocument:
+            closePreview()
             model.newDocument()
         case .openFile:
             beginImport(.markdownFiles)
         case .loadClipboard:
+            closePreview()
             loadFromClipboard()
         case .openFileURL(let url):
-            model.open(url: url)
+            loadMarkdownFile(url)
         }
     }
 
@@ -409,19 +442,34 @@ struct MarkdownWindowView: View {
             return
         }
 
-        // 仅切换目录树不会改动当前文档，因此这里不需要确认。
+        // 外部目录按“项目预览”处理：默认展示全部文件；仅切换目录树不会改动当前文档。
+        showsAllFiles = true
+        closePreview()
         folderTree.open(folder: request.folder)
         isSidebarVisible = true
         Log.markdown.info("Consumed external open request for \(request.folder.path, privacy: .public)")
 
         if let file = request.file {
-            requestFileLoad(file)
+            handleFileSelection(file)
         }
     }
 
-    private func openFolder(_ url: URL) {
+    private func openFolder(_ url: URL, projectMode: Bool) {
+        if projectMode {
+            showsAllFiles = true
+        }
+        closePreview()
         folderTree.open(folder: url)
         isSidebarVisible = true
+    }
+
+    /// 项目树点击入口：Markdown 走编辑器（保留脏文档确认），其他文件走只读预览。
+    private func handleFileSelection(_ url: URL) {
+        if MarkdownFileTypes.kind(of: url) == .markdown {
+            requestFileLoad(url)
+        } else {
+            showPreview(url)
+        }
     }
 
     private func requestFileLoad(_ url: URL) {
@@ -434,8 +482,50 @@ struct MarkdownWindowView: View {
             pendingAction = .openFileURL(url)
             isShowingUnsavedDialog = true
         } else {
-            model.open(url: url)
+            loadMarkdownFile(url)
         }
+    }
+
+    private func loadMarkdownFile(_ url: URL) {
+        closePreview()
+        model.open(url: url)
+        isEditorFocused = true
+    }
+
+    private func showPreview(_ url: URL) {
+        let kind = MarkdownFileTypes.kind(of: url)
+        preview = MarkdownPreview(
+            url: url,
+            kind: kind,
+            fileSize: 0,
+            content: nil,
+            isLoading: true,
+            errorMessage: nil
+        )
+        isEditorFocused = false
+        Log.markdown.info("Previewing file \(url.lastPathComponent, privacy: .public)")
+
+        Task { @MainActor in
+            let loaded = await MarkdownPreviewLoader.load(url: url)
+            guard preview?.url == url else { return }
+            preview = loaded
+        }
+    }
+
+    private func closePreview() {
+        guard preview != nil else { return }
+        preview = nil
+        isEditorFocused = true
+    }
+
+    private func openWithDefaultApp(_ url: URL) {
+        if !NSWorkspace.shared.open(url) {
+            model.showStatus("无法用默认应用打开 \(url.lastPathComponent)", kind: .info)
+        }
+    }
+
+    private func revealInFinder(_ url: URL) {
+        NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
     private func save() {

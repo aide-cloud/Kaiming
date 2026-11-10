@@ -478,6 +478,13 @@ final class WallpaperManager: ObservableObject {
 
     // MARK: - 文件夹轮换（可选能力）
 
+    /// 记录用户选择的轮换文件夹。选择面板会让菜单栏 popover 关闭，状态保存在 Manager 中，
+    /// 重新打开面板后仍可继续使用该文件夹。
+    func selectRotationFolder(_ folder: URL) {
+        rotationFolder = folder
+        Log.wallpaper.info("Rotation folder selected: \(folder.lastPathComponent, privacy: .public)")
+    }
+
     func startRotation(folder: URL, interval: TimeInterval, screenIDs: Set<String>) {
         guard !isBusy else { return }
         guard let targets = resolveTargets(screenIDs) else { return }

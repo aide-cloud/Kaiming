@@ -239,7 +239,8 @@ struct ClipboardPickerView: View   // 独立 Window scene(id: "clipboard-picker"
 
 ## 12. Markdown 目录树
 
-- 侧边栏目录树（文件夹可展开，仅展示 `.md` / `.markdown` 文件，文件夹优先排序）。
+- 侧边栏目录树：项目模式展示所有文件/文件夹（可切换「仅 Markdown」）；点击 `.md/.markdown`
+  载入编辑器，其他文本文件进入只读预览，图片/二进制提供默认应用/Finder 操作。
 - 工具条「打开文件夹…」使用 `.fileImporter(allowedContentTypes: [.folder])`。
 - 外部请求 `MarkdownOpenRequest`：打开目录树；若带 `file` 则同时载入该文件。
 - 当前文档有未保存修改时，载入外部文件前必须确认；仅切换目录树不算破坏文档。
@@ -261,8 +262,11 @@ struct ClipboardPickerView: View   // 独立 Window scene(id: "clipboard-picker"
 
 - 圆角：选区/标注工具栏提供 0–48pt 圆角调整，预览与最终 PNG 都应用圆角遮罩（圆角外透明）。
 - 长截图（仅区域模式）：
+  - **默认手动滚动**：点击长截图立即开始手动采集，不再要求先选择模式；保留 border-only
+    选区边框窗口（`.screenSaver`、`ignoresMouseEvents`、透明、只画边框），用户实时滚动。
+    HUD 提供「自动滚动 / 完成 / 取消」，自动切换复用当前拼接内容。
   - 自动滚动：需 `AccessibilityPermission.isTrusted`；未授权时调用 `prompt()` 并说明，
-    同时提供「手动滚动拼接」降级路径。
+    保持手动模式。
   - 自动滚动通过 `CGEvent` 向选区下方窗口发送滚轮事件；覆盖层在滚动/采集期间必须
     忽略鼠标事件（避免拦截滚轮），结束后恢复。
   - 每次滚动后用 `SCScreenshotManager.captureImage` 重新截取选区（本次运行不依赖冻结图），
@@ -286,4 +290,7 @@ struct ClipboardPickerView: View   // 独立 Window scene(id: "clipboard-picker"
 Kaiming --open-clipboard
 Kaiming --open-folder /abs/path
 Kaiming --snapshot-clipboard-picker /tmp/picker.png
+Kaiming --capture-test full [--capture-test-copy]
 ```
+
+`--capture-test` 只覆盖本次采集的剪贴板/声音行为，**不修改 SettingsStore/UserDefaults**。

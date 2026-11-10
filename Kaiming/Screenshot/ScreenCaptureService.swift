@@ -113,6 +113,8 @@ enum ScreenCaptureService {
     }
 
     private static func ownApplications(in content: SCShareableContent) -> [SCRunningApplication] {
+        // 排除本应用全部窗口：长截图的 border-only 覆盖窗口与 HUD 也属于本应用，
+        // 因此不会进入逐帧截图；普通截图同样不会截到本应用窗口。
         let ownPID = ProcessInfo.processInfo.processIdentifier
         let ownBundleID = Bundle.main.bundleIdentifier
         return content.applications.filter { application in
