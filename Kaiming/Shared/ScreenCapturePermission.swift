@@ -7,6 +7,8 @@ import ScreenCaptureKit
 /// 关键陷阱：未授权时 ScreenCaptureKit 的 `SCShareableContent` 会返回空列表且不抛错，
 /// 因此截图前必须显式调用 `isGranted` / `request()` 并给出可操作提示，绝不允许静默失败。
 enum ScreenCapturePermission {
+    /// 记录是否已经自动尝试过“授权后重启”，避免失败时无限重启。
+    private static let autoRelaunchKey = "kaiming.permission.autoRelaunchAttempted"
     static var isGranted: Bool {
         CGPreflightScreenCaptureAccess()
     }

@@ -9,6 +9,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var debugSnapshotWindow: NSWindow?
     #endif
 
+    private var permissionWatchdog: Task<Void, Never>?
+
     func applicationWillFinishLaunching(_ notification: Notification) {
         // LSUIElement 之外再显式设为 accessory，确保双击启动时也不会短暂出现 Dock 图标。
         NSApp.setActivationPolicy(.accessory)
@@ -19,6 +21,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         AppState.shared.refreshPermission()
         SettingsStore.shared.refreshLaunchAtLogin()
+        attemptAutomaticPermissionRecovery()
+        startPermissionWatchdogIfNeeded()
 
         // 全局快捷键：注册失败（被占用）时会记录到 HotKeyManager.failures，设置页可见。
         HotKeyManager.shared.install()
@@ -209,6 +213,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AppState.shared.refreshPermission()
     }
 
+    /// TCC 授权通常只对新进程生效。若系统认为已授权但当前进程 preflight 仍为 false，
+    /// 自动重启一次让授权生效；每个安装只尝试一次，失败后交给 UI 的“重启/重置”流程。
+    /// 用户可能正在系统设置里勾选权限；TCC 通常只对新进程生效。
+    /// 监视前台应用：一旦用户从系统设置/授权弹窗返回 Kaiming，自动重启一次让授权生效。
+    private func startPermissionWatchdogIfNeeded() {
+        guard !ScreenCapturePermission.isGranted else { return }
+        permissionWatchdog?.cancel()
+        permissionWatchdog = Task { @MainActor [weak self] in
+            let settingsBundleIDs: Set<String> = [
+                "com.apple.systempreferences",
+                "com.apple.SystemSettings",
+                "com.apple.SecurityAgent",
+            ]
+            var visitedSystemSettings = false
+
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 750_000_000)
+                guard let self else { return }
+
+                if ScreenCapturePermission.isGranted {
+                    UserDefaults.standard.set(false, forKey: "kaiming.permission.autoRelaunchAttempted")
+                    Log.app.info("Screen recording permission became effective; relaunching to apply")
+                    AppRelauncher.relaunch()
+                    return
+                }
+
+                let frontmost = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+                if let frontmost, settingsBundleIDs.contains(frontmost) {
+                    visitedSystemSettings = true
+                } else if visitedSystemSettings, frontmost == Bundle.main.bundleIdentifier {
+                    UserDefaults.standard.set(false, forKey: "kaiming.permission.autoRelaunchAttempted")
+                    Log.app.info("Returned from system settings with permission denied; relaunching to apply TCC")
+                    AppRelauncher.relaunch()
+                    return
+                }
+            }
+        }
+    }
+
+    private func attemptAutomaticPermissionRecovery() {
+        guard !ScreenCapturePermission.isGranted else {
+            UserDefaults.standard.set(false, forKey: "kaiming.permission.autoRelaunchAttempted")
+            return
+        }
+
+        let defaults = UserDefaults.standard
+        let key = "kaiming.permission.autoRelaunchAttempted"
+        guard !defaults.bool(forKey: key) else { return }
+        defaults.set(true, forKey: key)
+
+        let granted = ScreenCapturePermission.request()
+        #if DEBUG
+        NSLog("Kaiming debug: automatic permission request granted=\(granted)")
+        #endif
+        if granted {
+            // 系统已有授权记录，但当前进程未生效：重启一次使 TCC 重新绑定。
+            AppRelauncher.relaunch()
+        }
+    }
+
     /// 处理 `kaiming://open-folder?path=<base64url>`（CLI `kaiming ./docs` 使用）。
     func application(_ application: NSApplication, open urls: [URL]) {
         for url in urls {
@@ -267,6 +331,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        permissionWatchdog?.cancel()
         ClipboardManager.shared.stopMonitoring()
         HotKeyManager.shared.uninstall()
         Log.app.info("Kaiming terminating")

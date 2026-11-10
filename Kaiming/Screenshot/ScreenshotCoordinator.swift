@@ -275,6 +275,7 @@ final class ScreenshotCoordinator: ObservableObject {
         建议先点“重启 Kaiming”。若仍失败，请在系统设置中移除 Kaiming 后重新添加（设置 → 屏幕录制 → 重置权限）。
         """
         alert.addButton(withTitle: "重启 Kaiming")
+        alert.addButton(withTitle: "重置权限并重新授权")
         alert.addButton(withTitle: "打开系统设置")
         alert.addButton(withTitle: "取消")
         alert.icon = NSImage(systemSymbolName: "exclamationmark.shield", accessibilityDescription: nil)
@@ -284,9 +285,40 @@ final class ScreenshotCoordinator: ObservableObject {
         case .alertFirstButtonReturn:
             AppRelauncher.relaunch()
         case .alertSecondButtonReturn:
+            resetPermissionAndRelaunch()
+        case .alertThirdButtonReturn:
             ScreenCapturePermission.openSystemSettings()
         default:
             break
+        }
+    }
+
+    /// 清除绑定到旧构建签名的 TCC 记录，重新请求授权，然后自动重启。
+    private func resetPermissionAndRelaunch() {
+        guard ScreenCapturePermission.resetTCCEntry() else {
+            AppState.shared.flash(
+                "自动重置权限失败。请在系统设置 → 屏幕录制中移除 Kaiming 后重新添加，再重启应用。",
+                kind: .error
+            )
+            ScreenCapturePermission.openSystemSettings()
+            return
+        }
+
+        AppState.shared.flash(
+            "已清除旧授权记录。请在系统弹窗中允许屏幕录制；若未出现弹窗，请在系统设置中勾选 Kaiming。",
+            kind: .info
+        )
+        let granted = ScreenCapturePermission.request()
+        if granted {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                AppRelauncher.relaunch()
+            }
+        } else {
+            ScreenCapturePermission.openSystemSettings()
+            AppState.shared.flash(
+                "请勾选 Kaiming 后点击菜单栏面板里的“重启应用”，或重新运行 ./Scripts/run.sh。",
+                kind: .info
+            )
         }
     }
 
