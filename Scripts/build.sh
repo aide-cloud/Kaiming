@@ -24,7 +24,7 @@ xcodebuild \
   -scheme Kaiming \
   -configuration "$CONFIG" \
   -derivedDataPath "$DERIVED" \
-  "${LOCAL_SIGN_ARGS[@]}" \
+  ${LOCAL_SIGN_ARGS[@]+"${LOCAL_SIGN_ARGS[@]}"} \
   build
 
 APP="$DERIVED/Build/Products/$CONFIG/Kaiming.app"
