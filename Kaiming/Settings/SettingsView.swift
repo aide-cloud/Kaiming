@@ -79,6 +79,7 @@ private struct GeneralSettingsPane: View {
     @EnvironmentObject private var settings: SettingsStore
     @EnvironmentObject private var appState: AppState
     @State private var showResetConfirmation = false
+    @State private var showResetPermissionConfirmation = false
 
     var body: some View {
         Form {
@@ -104,30 +105,51 @@ private struct GeneralSettingsPane: View {
 
             Section("屏幕录制权限") {
                 HStack {
-                    Label(
-                        appState.screenRecordingGranted ? "已授权" : "未授权",
-                        systemImage: appState.screenRecordingGranted
-                            ? "checkmark.seal.fill"
-                            : "exclamationmark.triangle.fill"
-                    )
-                    .foregroundStyle(appState.screenRecordingGranted ? .green : .orange)
+                    if !appState.permissionProbeFinished {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("正在检测真实权限…")
+                    } else {
+                        Label(
+                            appState.screenRecordingGranted ? "已授权，可正常截图" : "未授权",
+                            systemImage: appState.screenRecordingGranted
+                                ? "checkmark.seal.fill"
+                                : "exclamationmark.triangle.fill"
+                        )
+                        .foregroundStyle(appState.screenRecordingGranted ? .green : .orange)
+                    }
 
                     Spacer()
 
-                    if !appState.screenRecordingGranted {
+                    Button("重新检测") {
+                        appState.probePermission()
+                    }
+                    .controlSize(.small)
+
+                    if appState.permissionProbeFinished, !appState.screenRecordingGranted {
                         Button("请求权限") {
                             ScreenCapturePermission.request()
-                            appState.refreshPermission()
+                            appState.probePermission()
                         }
+                        .controlSize(.small)
                         Button("打开系统设置") {
                             ScreenCapturePermission.openSystemSettings()
                         }
+                        .controlSize(.small)
+                        Button("重启应用") {
+                            AppRelauncher.relaunch()
+                        }
+                        .controlSize(.small)
                     }
                 }
 
-                Text("授权后需要重新打开 Kaiming 才会生效。未授权时 ScreenCaptureKit 会静默返回空列表。")
+                Text("检测以 ScreenCaptureKit 的实际采集能力为准。系统设置可能因重新构建后 TCC 记录绑定旧签名而仍显示“已授权”，此时请重置权限后重新授权。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                Button("重置屏幕录制权限…", role: .destructive) {
+                    showResetPermissionConfirmation = true
+                }
             }
 
             Section("重置") {
@@ -143,6 +165,24 @@ private struct GeneralSettingsPane: View {
                 HotKeyManager.shared.reload()
             }
             Button("取消", role: .cancel) {}
+        }
+        .confirmationDialog(
+            "重置屏幕录制权限？",
+            isPresented: $showResetPermissionConfirmation
+        ) {
+            Button("重置并重新请求", role: .destructive) {
+                if ScreenCapturePermission.resetTCCEntry() {
+                    AppState.shared.flash("已重置屏幕录制权限：请在系统设置中重新勾选 Kaiming，然后重启应用。", kind: .info)
+                    ScreenCapturePermission.request()
+                    ScreenCapturePermission.openSystemSettings()
+                } else {
+                    AppState.shared.flash("重置权限失败，请手动在系统设置中移除 Kaiming 后重新添加。", kind: .error)
+                }
+                appState.probePermission()
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("会清除 Kaiming 的屏幕录制授权记录，需要重新授权并重启应用。仅在系统设置显示已授权但仍提示未授权时使用。")
         }
     }
 }

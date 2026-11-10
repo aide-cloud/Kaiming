@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import ScreenCaptureKit
 
 /// 屏幕录制（Screen Recording）TCC 权限的唯一入口。
 ///
@@ -16,6 +17,42 @@ enum ScreenCapturePermission {
         let granted = CGRequestScreenCaptureAccess()
         Log.app.info("Screen capture access requested, granted=\(granted, privacy: .public)")
         return granted
+    }
+
+    /// 真实能力探测：直接询问 ScreenCaptureKit，而不是只看可能过期的 preflight。
+    ///
+    /// 背景：TCC 授权与构建的代码签名/CDHash 绑定。重新构建后系统设置可能仍显示
+    /// “已授权”，但 `CGPreflightScreenCaptureAccess()` 变为 false。若此时直接用
+    /// preflight 拦截，用户会看到“需要授权”的假阴性。以实际 SCK 结果为准。
+    static func verifyAccess() async -> Bool {
+        do {
+            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+            let granted = !content.displays.isEmpty
+            Log.app.info("ScreenCaptureKit access probe: \(granted, privacy: .public)")
+            return granted
+        } catch {
+            Log.app.error("ScreenCaptureKit access probe failed: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
+    }
+
+    /// 重置 Kaiming 的屏幕录制 TCC 记录（用于旧构建签名残留导致的状态错乱）。
+    /// 重置后系统会要求重新授权；调用方必须提示用户并重启应用。
+    @discardableResult
+    static func resetTCCEntry() -> Bool {
+        guard let bundleID = Bundle.main.bundleIdentifier else { return false }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+        process.arguments = ["reset", "ScreenCapture", bundleID]
+        do {
+            try process.run()
+            process.waitUntilExit()
+            Log.app.info("tccutil reset ScreenCapture \(bundleID, privacy: .public) exit=\(process.terminationStatus, privacy: .public)")
+            return process.terminationStatus == 0
+        } catch {
+            Log.app.error("tccutil reset failed: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
     }
 
     static func openSystemSettings() {

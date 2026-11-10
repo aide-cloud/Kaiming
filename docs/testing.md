@@ -57,6 +57,8 @@ log show --info --debug --last 5m --predicate 'subsystem == "com.kaiming.app"' -
 - [ ] 点「请求权限」出现系统流程；「打开系统设置」跳到 隐私与安全性 → 屏幕录制。
 - [ ] 授权后**重启应用**，横幅消失，截图可用。
 - [ ] 撤销权限（`tccutil reset ScreenCapture com.kaiming.app`）后重启，横幅重新出现。
+- [ ] 已授权但 `CGPreflightScreenCaptureAccess()` 返回 false 时，截图仍按真实 SCK 结果工作（不再假阳性拦截）。
+- [ ] 实际 SCK 失败时弹出恢复面板：重启应用 / 打开系统设置 / 取消；设置页「重置屏幕录制权限…」可清除旧 TCC 记录。
 
 ## 3. 截图
 

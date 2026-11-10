@@ -41,6 +41,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 AppRouter.shared.openSettings()
             }
         }
+        if ProcessInfo.processInfo.arguments.contains("--probe-permission") {
+            Task { @MainActor in
+                let preflight = ScreenCapturePermission.isGranted
+                let actual = await ScreenCapturePermission.verifyAccess()
+                NSLog("Kaiming debug: permission preflight=\(preflight) actualSCK=\(actual)")
+            }
+        }
+        if let index = ProcessInfo.processInfo.arguments.firstIndex(of: "--probe-permission-file"),
+           index + 1 < ProcessInfo.processInfo.arguments.count {
+            let path = ProcessInfo.processInfo.arguments[index + 1]
+            Task { @MainActor in
+                let preflight = ScreenCapturePermission.isGranted
+                let actual = await ScreenCapturePermission.verifyAccess()
+                let text = "preflight=\(preflight) actualSCK=\(actual) bundle=\(Bundle.main.bundleIdentifier ?? "-")\n"
+                try? text.write(to: URL(fileURLWithPath: path), atomically: true, encoding: .utf8)
+            }
+        }
         if ProcessInfo.processInfo.arguments.contains("--open-clipboard") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
                 AppRouter.shared.openClipboardPicker()

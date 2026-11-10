@@ -9,7 +9,7 @@ struct MenuBarPanel: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            if !appState.screenRecordingGranted, appState.selectedTab == .screenshot {
+            if appState.permissionProbeFinished, !appState.screenRecordingGranted, appState.selectedTab == .screenshot {
                 permissionBanner
             }
             if let notice = appState.notice {
@@ -98,6 +98,11 @@ struct MenuBarPanel: View {
 
                     Button("打开系统设置") {
                         ScreenCapturePermission.openSystemSettings()
+                    }
+                    .controlSize(.small)
+
+                    Button("重启应用") {
+                        AppRelauncher.relaunch()
                     }
                     .controlSize(.small)
                 }

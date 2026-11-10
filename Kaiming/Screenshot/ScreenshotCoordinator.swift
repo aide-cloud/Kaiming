@@ -26,9 +26,11 @@ final class ScreenshotCoordinator: ObservableObject {
         }
         Log.screenshot.info("Screenshot requested: \(mode.rawValue, privacy: .public)")
 
-        guard ScreenCapturePermission.isGranted else {
-            requestPermissionWithExplanation()
-            return
+        // 不再用 preflight 直接拦截：TCC 记录可能仍绑定旧构建的 CDHash，
+        // 系统设置显示已授权但 preflight 返回 false。以真实 SCK 采集结果为准；
+        // 只有实际采集失败时才提示授权（见 report(_:)）。
+        if !ScreenCapturePermission.isGranted {
+            Log.screenshot.info("Preflight reports no access; attempting real ScreenCaptureKit capture")
         }
         guard !NSScreen.screens.isEmpty else {
             AppState.shared.flash("没有检测到可用的显示器，请唤醒屏幕后再试。", kind: .error)
@@ -41,31 +43,8 @@ final class ScreenshotCoordinator: ObservableObject {
         }
     }
 
-    // MARK: - 权限
-
-    private func requestPermissionWithExplanation() {
-        AppState.shared.refreshPermission()
-        if ScreenCapturePermission.isGranted {
-            AppState.shared.flash("屏幕录制权限已开启，若截图仍失败请重新启动 Kaiming。", kind: .info)
-            return
-        }
-
-        Log.screenshot.error("Screen recording permission is not granted")
-        AppState.shared.flash(
-            "需要屏幕录制权限：请在“系统设置 › 隐私与安全性 › 屏幕录制”中勾选 Kaiming，然后重新启动应用。",
-            kind: .error
-        )
-        let granted = ScreenCapturePermission.request()
-        AppState.shared.refreshPermission()
-
-        if granted || ScreenCapturePermission.isGranted {
-            AppState.shared.flash("屏幕录制权限已开启，可能需要重新启动 Kaiming 后才会生效。", kind: .info)
-        } else {
-            ScreenCapturePermission.openSystemSettings()
-        }
-    }
-
     // MARK: - 采集
+
 
     private func performCapture(mode: CaptureMode) async {
         let settings = SettingsStore.shared
@@ -278,8 +257,36 @@ final class ScreenshotCoordinator: ObservableObject {
         Log.screenshot.error("Capture aborted: \(error.localizedDescription, privacy: .public)")
 
         if let screenshotError = error as? ScreenshotError, screenshotError.isPermissionRelated {
-            AppState.shared.refreshPermission()
+            // 实际 SCK 失败才视为权限问题：触发系统请求并重新探测能力。
+            AppState.shared.probePermission()
+            ScreenCapturePermission.request()
+            presentPermissionRecoveryAlert()
+        }
+    }
+
+    /// SCK 实际失败时才弹出：提供一键重启/打开设置，覆盖“系统设置已授权但当前进程未生效”的 TCC 状态。
+    private func presentPermissionRecoveryAlert() {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "屏幕录制权限尚未对当前进程生效"
+        alert.informativeText = """
+        系统设置中可能已显示 Kaiming 已授权，但 TCC 授权通常只对新启动的进程生效，重新构建后也可能绑定到旧签名。
+
+        建议先点“重启 Kaiming”。若仍失败，请在系统设置中移除 Kaiming 后重新添加（设置 → 屏幕录制 → 重置权限）。
+        """
+        alert.addButton(withTitle: "重启 Kaiming")
+        alert.addButton(withTitle: "打开系统设置")
+        alert.addButton(withTitle: "取消")
+        alert.icon = NSImage(systemSymbolName: "exclamationmark.shield", accessibilityDescription: nil)
+
+        NSApp.activate(ignoringOtherApps: true)
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            AppRelauncher.relaunch()
+        case .alertSecondButtonReturn:
             ScreenCapturePermission.openSystemSettings()
+        default:
+            break
         }
     }
 

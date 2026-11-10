@@ -19,9 +19,9 @@ enum ScreenshotError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .permissionDenied:
-            "需要屏幕录制权限：请在“系统设置 › 隐私与安全性 › 屏幕录制”中勾选 Kaiming，然后重新启动应用。"
+            "需要屏幕录制权限。请在“系统设置 › 隐私与安全性 › 屏幕录制”中勾选 Kaiming；若已勾选仍失败，请移除 Kaiming 后重新添加，或重启应用。"
         case .noContent:
-            "没有获取到屏幕画面，通常是屏幕录制权限尚未生效。请在系统设置中确认已授权，并重新启动 Kaiming。"
+            "没有获取到屏幕画面。若系统设置已显示已授权，请在设置中关闭再打开 Kaiming 的屏幕录制开关，或移除后重新添加，然后重启应用。"
         case .noDisplay:
             "没有找到可截取的显示器。请确认显示器已连接并处于唤醒状态。"
         case let .displayCaptureFailed(_, message):

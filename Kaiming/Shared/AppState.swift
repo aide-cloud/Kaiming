@@ -48,19 +48,39 @@ final class AppState: ObservableObject {
 
     @Published var selectedTab: PanelTab = .screenshot
     @Published private(set) var screenRecordingGranted = ScreenCapturePermission.isGranted
+    /// 是否完成过一次真实 SCK 能力探测（完成前不显示“未授权”横幅，避免假阴性闪烁）。
+    @Published private(set) var permissionProbeFinished = false
     @Published private(set) var lastCapturedImage: NSImage?
     @Published private(set) var lastCaptureDate: Date?
     @Published var notice: Notice?
 
     private var noticeTask: Task<Void, Never>?
+    private var isProbingPermission = false
 
     private init() {}
 
+    /// 同步刷新 preflight；若 preflight 为 false，再用真实 SCK 探测一次，避免假阴性。
     func refreshPermission() {
-        let granted = ScreenCapturePermission.isGranted
-        if granted != screenRecordingGranted {
-            screenRecordingGranted = granted
-            Log.app.info("Screen capture permission changed to \(granted, privacy: .public)")
+        let preflight = ScreenCapturePermission.isGranted
+        if preflight {
+            screenRecordingGranted = true
+            permissionProbeFinished = true
+            return
+        }
+        probePermission()
+    }
+
+    /// 真实 SCK 能力探测（不会弹系统授权框，只判断当前构建是否真的能采集）。
+    func probePermission() {
+        guard !isProbingPermission else { return }
+        isProbingPermission = true
+        Task { @MainActor [weak self] in
+            let granted = await ScreenCapturePermission.verifyAccess()
+            guard let self else { return }
+            self.isProbingPermission = false
+            self.screenRecordingGranted = granted
+            self.permissionProbeFinished = true
+            Log.app.info("Screen capture probe finished: \(granted, privacy: .public)")
         }
     }
 

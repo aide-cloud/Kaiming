@@ -25,6 +25,26 @@ ScreenCaptureKit 在未授权时：
 - 面板顶部横幅 + `AppState.flash` 文案 + 打开系统设置按钮；
 - 日志记录（`Log.screenshot`）。
 
+### 系统设置显示已授权，但截图仍提示未授权
+
+这是 macOS TCC 的典型状态：屏幕录制授权与应用的**代码签名/CDHash** 绑定。重新构建（尤其 ad-hoc 签名）
+后，系统设置里可能仍显示 Kaiming 已勾选，但当前二进制不再匹配旧授权记录，
+`CGPreflightScreenCaptureAccess()` 会返回 false，甚至 ScreenCaptureKit 实际采集也失败。
+
+Kaiming 1.1.1 起的处理：
+
+1. **不再用 preflight 直接拦截**：每次截图都先尝试真实 ScreenCaptureKit 采集，能采集就直接成功；
+   只有实际失败才提示授权。
+2. 权限状态用真实 SCK 能力探测，不再只信 preflight（设置 → 通用 → 屏幕录制权限 → 重新检测）。
+3. 实际失败时弹出恢复面板：
+   - **重启 Kaiming**：TCC 授权通常只对新进程生效；
+   - **打开系统设置**；
+   - 设置 → 通用 → **重置屏幕录制权限…**：清除 `com.kaiming.app` 的旧 TCC 记录，再重新请求授权并重启。
+4. 若仍异常：在系统设置中移除 Kaiming（−）后重新添加当前构建，再重启应用。
+
+开发构建建议：固定使用同一个 app 路径与签名身份；每次更换构建路径/重新签名都可能需要重新授权。
+正式分发使用稳定的 Developer ID 签名可避免此问题。
+
 ### Info.plist
 
 `Config/Info.plist` 包含：

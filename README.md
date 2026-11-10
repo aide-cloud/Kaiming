@@ -229,6 +229,8 @@ export APP_NOTARY_PASSWORD=xxxx-xxxx-xxxx-xxxx
 
 - 最低 macOS 14.0；不使用 macOS 26 的 `captureScreenshot` 一次性 API（其非前台 Space 返回 -3811 的已知问题与 14 基线不匹配）。
 - 剪贴板的 `detectedPatterns`（macOS 15.4+）在 SDK 15.2 中不可用，类型识别使用 `changeCount` + pasteboard 类型检查。
+- 屏幕录制授权与构建签名/CDHash 绑定：重新构建后系统设置可能仍显示已授权，但需要重启应用/重置权限。
+  Kaiming 1.1.1 已改为以真实 ScreenCaptureKit 能力为准，并在失败时提供重启/重置入口。
 - 未做开机自启的失败重试；`SMAppService` 在未签名的开发构建上可能拒绝注册，设置页会显示系统错误。
 - macOS 14 + `LSUIElement` 下 SwiftUI `Settings` scene 的 `showSettingsWindow:` 会返回 handled
   但不创建窗口（本机实测），因此偏好设置改用独立 `Window(id: "settings")`，功能等价，
