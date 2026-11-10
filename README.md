@@ -8,9 +8,10 @@ Kaiming 是一个 macOS 菜单栏常驻的四合一原生效率工具，用同�
 | 模块 | 能力 |
 |---|---|
 | 截图 | 区域 / 窗口 / 全屏三种模式，AppKit 覆盖层框选与标注，完成后 PNG 自动进剪贴板，并可在面板内一键复制 / 保存 / 设为壁纸 |
-| 剪贴板 | 历史记录、类型识别、置顶、一键复制 / 清除，所有读写串行化 |
-| 壁纸 | 从剪贴板 / 图片文件 / 最近截图设置壁纸，多显示器独立设置，重启后保持 |
-| Markdown | 独立 SwiftUI 窗口，Typora 式实时渲染（TextKit 2），载入剪贴板 / 打开 / 编辑 / 保存 |
+| 剪贴板 | 历史记录、类型识别、置顶、一键复制 / 清除；⌥⇧C 打开快捷选择窗口，键盘上下选中、Enter 复制 |
+| 壁纸 | 从剪贴板 / 图片文件 / 最近截图设置壁纸；支持视频动态壁纸（桌面层实验方案）；多显示器独立设置，重启后保持 |
+| Markdown | 独立 SwiftUI 窗口，Typora 式实时渲染（TextKit 2）；目录树侧边栏、载入剪贴板 / 打开 / 编辑 / 保存；支持 `kaiming ./docs` 打开目录 |
+| 应用中心 | 菜单栏「应用」页：已安装应用启动器、最近目录、打开目录；配合 CLI 直接进入 Markdown 文件树 |
 
 纯 Swift 6 + Apple 原生框架，**没有 WebView**，不引入跨平台抽象。
 
@@ -18,13 +19,25 @@ Kaiming 是一个 macOS 菜单栏常驻的四合一原生效率工具，用同�
 
 ## 界面一览
 
-| 菜单栏面板（未授权时的权限引导） | Markdown 实时渲染 |
+| 菜单栏面板 | Markdown 实时渲染 |
 |---|---|
 | ![菜单栏面板](docs/screenshots/panel-screenshot.png) | ![Markdown 编辑器](docs/screenshots/markdown-editor.png) |
 
-| 剪贴板历史 | 多显示器壁纸 |
+| Markdown 目录树 | 剪贴板快捷选择（⌥⇧C） |
+|---|---|
+| ![Markdown 目录树](docs/screenshots/markdown-folder-tree.png) | ![剪贴板快捷选择](docs/screenshots/clipboard-picker.png) |
+
+| 应用中心 | 视频动态壁纸 |
+|---|---|
+| ![应用中心](docs/screenshots/app-center.png) | ![视频动态壁纸](docs/screenshots/panel-wallpaper-video.png) |
+
+| 剪贴板历史 | 多显示器壁纸 / 设置 |
 |---|---|
 | ![剪贴板](docs/screenshots/panel-clipboard.png) | ![壁纸](docs/screenshots/panel-wallpaper.png) |
+
+| 截图圆角 + 标注 | 长截图自动拼接 |
+|---|---|
+| ![圆角选区](docs/screenshots/screenshot-rounded-overlay.png) | ![长截图](docs/screenshots/long-screenshot-hud.png) |
 
 | 偏好设置 |
 |---|
@@ -34,13 +47,13 @@ Kaiming 是一个 macOS 菜单栏常驻的四合一原生效率工具，用同�
 
 | 模块 | 实现 |
 |---|---|
-| 应用骨架 | Swift 6 + SwiftUI；`MenuBarExtra(.window)` + 独立 `Window` scene（Markdown / 设置）；`LSUIElement` 常驻菜单栏 |
+| 应用骨架 | Swift 6 + SwiftUI；`MenuBarExtra(.window)` + 独立 `Window` scene（Markdown / 设置 / 剪贴板快捷选择）；`LSUIElement` 常驻菜单栏 |
 | 截图核心 | ScreenCaptureKit：`SCShareableContent` → `SCContentFilter` → `SCStreamConfiguration` → `SCScreenshotManager.captureImage`（macOS 14+） |
 | 截图覆盖层 | AppKit：每屏一个无边框 `.screenSaver` 层级 `NSWindow`，冻结截图 + 8 手柄选区 + CG 标注 |
 | 剪贴板 | AppKit `NSPasteboard`，专用串行 `DispatchQueue` + `changeCount` 轮询 |
 | 壁纸 | AppKit `NSWorkspace.setDesktopImageURL`，文件持久化到 Application Support |
 | Markdown | TextKit 2 原生编辑器（`swift-markdown-engine 0.15.0` 内嵌，见 [docs/vendor.md](docs/vendor.md)） |
-| 全局快捷键 | Carbon `RegisterEventHotKey`（⌥⇧S / W / F / M） |
+| 全局快捷键 | Carbon `RegisterEventHotKey`（⌥⇧S / W / F / C / M） |
 | 偏好设置 | 独立 `Window` scene + `UserDefaults`（`SettingsStore` 单一来源） |
 
 ## 构建与运行
@@ -87,9 +100,28 @@ open Kaiming.xcodeproj
 | ⌥⇧S | 区域截图 |
 | ⌥⇧W | 窗口截图 |
 | ⌥⇧F | 全屏截图（鼠标所在屏幕） |
+| ⌥⇧C | 剪贴板快捷选择（↑/↓ 选择，Enter 复制） |
 | ⌥⇧M | 打开 Markdown 窗口 |
 
 冲突时设置 → 快捷键页会显示注册失败原因；可关闭全局快捷键或调整冲突应用。
+
+## 命令行（CLI）
+
+`kaiming ./docs` 会通过 `kaiming://` URL scheme 让正在运行的 Kaiming 在 Markdown 窗口中打开该目录；
+传入 `.md` 文件则同时打开文件。
+
+```bash
+# 安装（若 /usr/local/bin 需要权限，用 sudo 或指定 ~/.local/bin）
+./Scripts/install-cli.sh
+# 或手动
+ln -sf "$PWD/Scripts/kaiming" /usr/local/bin/kaiming
+
+kaiming .            # 在当前目录打开文件树
+kaiming ./docs       # 打开 docs 目录
+kaiming ./README.md  # 打开文件所在目录并载入文件
+```
+
+也可以在菜单栏「应用 → 打开目录…」选择目录，效果相同。
 
 ## 数据目录
 
@@ -182,6 +214,10 @@ export APP_NOTARY_PASSWORD=xxxx-xxxx-xxxx-xxxx
 - macOS 14 + `LSUIElement` 下 SwiftUI `Settings` scene 的 `showSettingsWindow:` 会返回 handled
   但不创建窗口（本机实测），因此偏好设置改用独立 `Window(id: "settings")`，功能等价，
   ⌘, 仍可用；这是对规格中「Settings scene」的一处有据可查的工程偏离。
+- 视频壁纸是**桌面层窗口**实现（macOS 没有公开 API 把视频设为系统壁纸）：
+  Kaiming 必须保持运行，退出即停止；桌面图标保持在视频上层。
+- 长截图的**自动滚动**需要辅助功能（Accessibility）权限；未授权时可使用手动滚动拼接。
+- 应用中心只扫描 `/Applications`、`/System/Applications`、`~/Applications` 的顶层与二级 `.app`，不索引 Spotlight 全盘应用。
 - 未实现云端同步/多设备历史；所有数据仅本机。
 
 Copyright © 2026 Kaiming.

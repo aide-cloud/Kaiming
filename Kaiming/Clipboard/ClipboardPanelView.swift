@@ -6,6 +6,7 @@ import SwiftUI
 struct ClipboardPanelView: View {
     @ObservedObject private var manager = ClipboardManager.shared
     @EnvironmentObject private var settings: SettingsStore
+    @Environment(\.openWindow) private var openWindow
     @State private var showClearHistoryConfirmation = false
 
     var body: some View {
@@ -204,6 +205,26 @@ struct ClipboardPanelView: View {
                     )
 
                 Spacer(minLength: 4)
+
+                Button {
+                    openWindow(id: "clipboard-picker")
+                    NSApp.activate(ignoringOtherApps: true)
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "rectangle.on.rectangle")
+                            .font(.system(size: 9, weight: .medium))
+                        Text("⌥⇧C")
+                            .font(.system(size: 9, weight: .medium, design: .rounded))
+                    }
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background(
+                        Capsule().fill(Color.secondary.opacity(0.12))
+                    )
+                }
+                .buttonStyle(.plain)
+                .help("打开剪贴板快捷选择（⌥⇧C）")
+                .accessibilityLabel("打开剪贴板快捷选择")
 
                 Button {
                     manager.refreshNow()

@@ -12,18 +12,29 @@ struct MarkdownWindowView: View {
     @EnvironmentObject private var settings: SettingsStore
 
     @StateObject private var model = MarkdownDocumentModel()
+    @ObservedObject private var openRequest = MarkdownOpenRequest.shared
+    @ObservedObject private var folderTree = MarkdownFolderTree.shared
 
     @State private var isImporting = false
+    @State private var importMode: ImportMode = .markdownFiles
     @State private var isExporting = false
     @State private var isShowingUnsavedDialog = false
     @State private var pendingAction: PendingAction?
     @State private var confirmedAction: PendingAction?
     @State private var isEditorFocused = true
+    @State private var isSidebarVisible = false
+    @State private var didInitialLoad = false
 
     private enum PendingAction {
         case newDocument
         case openFile
         case loadClipboard
+        case openFileURL(URL)
+    }
+
+    private enum ImportMode {
+        case markdownFiles
+        case folder
     }
 
     var body: some View {
@@ -36,9 +47,22 @@ struct MarkdownWindowView: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
 
-            editor
+            HStack(spacing: 0) {
+                if isSidebarVisible {
+                    MarkdownSidebarView(
+                        tree: folderTree,
+                        currentFileURL: model.documentURL,
+                        onOpenFolder: { beginImport(.folder) },
+                        onSelectFile: { requestFileLoad($0) },
+                        onClose: { isSidebarVisible = false }
+                    )
+                    Divider()
+                }
+
+                editor
+            }
         }
-        .frame(minWidth: 640, minHeight: 480)
+        .frame(minWidth: 900, minHeight: 480)
         .background(Color(nsColor: .textBackgroundColor))
         .background(
             WindowChromeConfigurator(
@@ -73,18 +97,25 @@ struct MarkdownWindowView: View {
         }
         .fileImporter(
             isPresented: $isImporting,
-            allowedContentTypes: MarkdownFileTypes.importable,
+            allowedContentTypes: importMode == .folder ? [.folder] : MarkdownFileTypes.importable,
             allowsMultipleSelection: false
         ) { result in
+            let mode = importMode
             switch result {
             case .success(let urls):
                 guard let url = urls.first else {
-                    model.presentError("没有选择文件。")
+                    model.presentError(mode == .folder ? "没有选择文件夹。" : "没有选择文件。")
                     return
                 }
-                model.open(url: url)
+                switch mode {
+                case .folder:
+                    openFolder(url)
+                case .markdownFiles:
+                    model.open(url: url)
+                }
             case .failure(let error):
-                model.presentError("打开文件失败：\(error.localizedDescription)")
+                let prefix = mode == .folder ? "打开文件夹失败" : "打开文件失败"
+                model.presentError("\(prefix)：\(error.localizedDescription)")
             }
         }
         .fileExporter(
@@ -106,6 +137,19 @@ struct MarkdownWindowView: View {
             }
         } message: {
             Text(model.errorMessage ?? "")
+        }
+        .onAppear {
+            handleInitialAppear()
+        }
+        .onChange(of: openRequest.request) { _, request in
+            if request != nil {
+                consumeOpenRequest()
+            }
+        }
+        .onChange(of: folderTree.rootURL) { _, rootURL in
+            if rootURL != nil {
+                isSidebarVisible = true
+            }
         }
     }
 
@@ -172,6 +216,18 @@ struct MarkdownWindowView: View {
 
             toolbarButton("doc.on.doc", help: "复制全文到剪贴板") {
                 copyAllToClipboard()
+            }
+
+            toolbarButton("folder.badge.plus", help: "打开文件夹…") {
+                beginImport(.folder)
+            }
+
+            toolbarButton(
+                "sidebar.left",
+                help: isSidebarVisible ? "隐藏目录树" : "显示目录树",
+                isActive: isSidebarVisible
+            ) {
+                isSidebarVisible.toggle()
             }
 
             toolbarDivider
@@ -266,11 +322,13 @@ struct MarkdownWindowView: View {
     private func toolbarButton(
         _ symbol: String,
         help: String,
+        isActive: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: 13, weight: .regular))
+                .foregroundStyle(isActive ? Color.accentColor : Color.primary)
                 .frame(width: 26, height: 24)
                 .contentShape(Rectangle())
         }
@@ -312,9 +370,71 @@ struct MarkdownWindowView: View {
         case .newDocument:
             model.newDocument()
         case .openFile:
-            isImporting = true
+            beginImport(.markdownFiles)
         case .loadClipboard:
             loadFromClipboard()
+        case .openFileURL(let url):
+            model.open(url: url)
+        }
+    }
+
+    // MARK: - 目录树 / 外部打开
+
+    private func beginImport(_ mode: ImportMode) {
+        importMode = mode
+        isImporting = true
+    }
+
+    private func handleInitialAppear() {
+        guard !didInitialLoad else { return }
+        didInitialLoad = true
+
+        // 外部请求优先于上次打开的目录。
+        consumeOpenRequest()
+        if folderTree.rootURL == nil {
+            _ = folderTree.restoreRecentFolder()
+        }
+        if folderTree.rootURL != nil {
+            isSidebarVisible = true
+        }
+    }
+
+    private func consumeOpenRequest() {
+        guard let request = openRequest.consume() else { return }
+
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: request.folder.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            model.presentError("无法打开目录：路径不存在或不是文件夹（\(request.folder.lastPathComponent)）")
+            return
+        }
+
+        // 仅切换目录树不会改动当前文档，因此这里不需要确认。
+        folderTree.open(folder: request.folder)
+        isSidebarVisible = true
+        Log.markdown.info("Consumed external open request for \(request.folder.path, privacy: .public)")
+
+        if let file = request.file {
+            requestFileLoad(file)
+        }
+    }
+
+    private func openFolder(_ url: URL) {
+        folderTree.open(folder: url)
+        isSidebarVisible = true
+    }
+
+    private func requestFileLoad(_ url: URL) {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            model.presentError("无法打开文件：文件不存在（\(url.lastPathComponent)）")
+            return
+        }
+
+        if model.isDirty {
+            pendingAction = .openFileURL(url)
+            isShowingUnsavedDialog = true
+        } else {
+            model.open(url: url)
         }
     }
 

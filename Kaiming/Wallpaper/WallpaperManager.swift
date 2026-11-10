@@ -35,15 +35,26 @@ final class WallpaperManager: ObservableObject {
     @Published private(set) var rotationFolder: URL?
     @Published private(set) var rotationInterval: TimeInterval = 300
 
+    /// 动态（视频）壁纸状态：是否启用、启用的屏幕、当前视频信息。
+    @Published private(set) var isDynamicWallpaperActive = false
+    @Published private(set) var dynamicWallpaperScreens: Set<String> = []
+    @Published private(set) var dynamicWallpaperInfo: WallpaperVideoInfo?
+
+    private let dynamicController = DynamicWallpaperController()
     private var screenObserver: NSObjectProtocol?
+    private var terminationObserver: NSObjectProtocol?
     private var rotationTask: Task<Void, Never>?
     private var rotationScreenIDs: Set<String> = []
     private var rotationTick = 0
     private var thumbnailCache: [String: Data] = [:]
+    /// 串行化动态壁纸状态文件的写入，避免快速「停止 / 开始」时 JSON 写入乱序。
+    private var dynamicStateWriteTask: Task<Void, Never>?
 
     private init() {
         refreshScreens()
         observeScreenChanges()
+        observeTermination()
+        scheduleDynamicWallpaperRestore()
         Log.wallpaper.info("WallpaperManager ready with \(self.screens.count, privacy: .public) screen(s)")
     }
 
@@ -94,7 +105,22 @@ final class WallpaperManager: ObservableObject {
                 guard let self else { return }
                 self.refreshScreens()
                 self.rotationScreenIDs.formIntersection(self.screens.map(\.id))
+                self.syncDynamicWallpaperScreens()
                 Log.wallpaper.info("Screen parameters changed; refresh finished")
+            }
+        }
+    }
+
+    private func observeTermination() {
+        terminationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.dynamicController.stopAll()
+                Log.wallpaper.info("Dynamic wallpaper stopped for app termination")
             }
         }
     }
@@ -217,6 +243,239 @@ final class WallpaperManager: ObservableObject {
         return data
     }
 
+    // MARK: - 动态视频壁纸
+
+    /// 选择视频并设为桌面层动态壁纸（每屏一个窗口、循环静音、多屏独立）。
+    ///
+    /// macOS 没有公开 API 把视频设为系统壁纸，这里用 `CGWindowLevelForKey(.desktopWindow) + 1`
+    /// 的桌面层窗口模拟，属于实验方案；桌面图标层级更高。
+    func startDynamicWallpaper(fileURL: URL, screenIDs: Set<String>) {
+        guard !isBusy else {
+            Log.wallpaper.info("Ignore startDynamicWallpaper while busy")
+            return
+        }
+        guard let targets = resolveTargets(screenIDs) else { return }
+        guard WallpaperVideoStore.isSupportedVideoFile(fileURL) else {
+            AppState.shared.flash("仅支持 MP4 / MOV 视频文件", kind: .error)
+            return
+        }
+
+        let source = fileURL
+        let accessing = source.startAccessingSecurityScopedResource()
+        isBusy = true
+        Log.wallpaper.info("Importing dynamic wallpaper video \(source.lastPathComponent, privacy: .public)")
+
+        Task { [weak self] in
+            defer {
+                if accessing { source.stopAccessingSecurityScopedResource() }
+            }
+            guard let self else { return }
+            do {
+                let sourceInfo = try await WallpaperVideoStore.inspectVideo(url: source)
+                let storedURL = try await WallpaperVideoStore.storeVideoFile(source)
+                let storedInfo = WallpaperVideoInfo(
+                    url: storedURL,
+                    duration: sourceInfo.duration,
+                    pixelWidth: sourceInfo.pixelWidth,
+                    pixelHeight: sourceInfo.pixelHeight,
+                    thumbnailData: sourceInfo.thumbnailData
+                )
+                self.installDynamicWallpaper(info: storedInfo, screenIDs: targets)
+            } catch {
+                self.isBusy = false
+                let message = error.localizedDescription
+                Log.wallpaper.error("Dynamic wallpaper import failed: \(message, privacy: .public)")
+                AppState.shared.flash("动态壁纸设置失败：\(message)", kind: .error)
+            }
+        }
+    }
+
+    /// 停止所有屏幕的动态壁纸，并清除跨启动恢复状态。
+    func stopDynamicWallpaper() {
+        let wasActive = isDynamicWallpaperActive
+        dynamicController.stopAll()
+        dynamicWallpaperScreens = []
+        dynamicWallpaperInfo = nil
+        isDynamicWallpaperActive = false
+        clearDynamicPersistence()
+        if wasActive {
+            Log.wallpaper.info("Dynamic wallpaper stopped by user")
+            AppState.shared.flash("已停止动态壁纸", kind: .success)
+        }
+    }
+
+    /// 只停止指定屏幕的动态壁纸（例如这些屏幕改为静态壁纸时）。
+    func stopDynamicWallpaper(screenIDs: Set<String>) {
+        detachDynamicWallpaper(screenIDs: screenIDs)
+    }
+
+    private func installDynamicWallpaper(info: WallpaperVideoInfo, screenIDs: Set<String>) {
+        let screenMap = Self.makeScreenMap()
+        // 当前实现为「单个视频跨多屏」：新视频替换已有动态壁纸，避免持久化状态出现多个视频的二义性。
+        dynamicController.stopAll()
+        let started = dynamicController.start(
+            videoURL: info.url,
+            screenIDs: screenIDs,
+            screens: screenMap
+        )
+        isBusy = false
+
+        guard !started.isEmpty else {
+            AppState.shared.flash("动态壁纸启动失败：没有可用屏幕", kind: .error)
+            clearDynamicPersistence()
+            return
+        }
+
+        dynamicWallpaperInfo = info
+        dynamicWallpaperScreens = started
+        isDynamicWallpaperActive = true
+        persistDynamicWallpaperState()
+        refreshScreens()
+        AppState.shared.flash("已启用动态壁纸", kind: .success)
+        Log.wallpaper.info(
+            "Dynamic wallpaper active on \(started.count, privacy: .public) screen(s): \(info.url.lastPathComponent, privacy: .public)"
+        )
+        schedulePlaybackStatusLog()
+    }
+
+    private func detachDynamicWallpaper(screenIDs: Set<String>) {
+        guard isDynamicWallpaperActive else { return }
+        let affected = dynamicWallpaperScreens.intersection(screenIDs)
+        guard !affected.isEmpty else { return }
+
+        dynamicController.stop(screenIDs: affected)
+        dynamicWallpaperScreens.subtract(affected)
+        if dynamicWallpaperScreens.isEmpty {
+            dynamicWallpaperInfo = nil
+            isDynamicWallpaperActive = false
+            clearDynamicPersistence()
+            Log.wallpaper.info("Dynamic wallpaper stopped because all screens switched to static wallpaper")
+        } else {
+            persistDynamicWallpaperState()
+        }
+    }
+
+    private func syncDynamicWallpaperScreens() {
+        guard isDynamicWallpaperActive else { return }
+        dynamicController.syncScreens(Self.makeScreenMap())
+        let activeScreenIDs = dynamicController.activeScreenIDs
+        guard activeScreenIDs != dynamicWallpaperScreens else { return }
+
+        dynamicWallpaperScreens = activeScreenIDs
+        if activeScreenIDs.isEmpty {
+            dynamicWallpaperInfo = nil
+            isDynamicWallpaperActive = false
+            clearDynamicPersistence()
+            Log.wallpaper.info("Dynamic wallpaper stopped: all target screens disconnected")
+        } else {
+            persistDynamicWallpaperState()
+            Log.wallpaper.info("Dynamic wallpaper screens updated: \(activeScreenIDs.count, privacy: .public)")
+        }
+    }
+
+    private func persistDynamicWallpaperState() {
+        guard !dynamicWallpaperScreens.isEmpty, let info = dynamicWallpaperInfo else {
+            enqueueDynamicStateWrite { await WallpaperVideoStore.clearState() }
+            return
+        }
+        let state = WallpaperDynamicState(
+            videoPath: info.url.path,
+            screenIDs: dynamicWallpaperScreens.sorted()
+        )
+        enqueueDynamicStateWrite { await WallpaperVideoStore.saveState(state) }
+    }
+
+    private func clearDynamicPersistence() {
+        enqueueDynamicStateWrite { await WallpaperVideoStore.clearState() }
+    }
+
+    private func enqueueDynamicStateWrite(_ operation: @escaping @Sendable () async -> Void) {
+        let previous = dynamicStateWriteTask
+        dynamicStateWriteTask = Task {
+            await previous?.value
+            await operation()
+        }
+    }
+
+    /// 启动后延迟恢复上次启用的动态壁纸；失败只记录/提示，不阻塞启动。
+    private func scheduleDynamicWallpaperRestore() {
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            await self?.restoreDynamicWallpaperIfNeeded()
+        }
+    }
+
+    private func restoreDynamicWallpaperIfNeeded() async {
+        guard !isDynamicWallpaperActive else { return }
+        guard let state = await WallpaperVideoStore.loadState() else { return }
+
+        let storedURL = URL(fileURLWithPath: state.videoPath).standardizedFileURL
+        let wallpaperRoot = AppPaths.wallpapers.standardizedFileURL.path + "/"
+        guard storedURL.path.hasPrefix(wallpaperRoot),
+              FileManager.default.isReadableFile(atPath: storedURL.path) else {
+            Log.wallpaper.error("Dynamic wallpaper restore failed: stored video is missing")
+            AppState.shared.flash("动态壁纸恢复失败：视频文件已丢失", kind: .error)
+            await WallpaperVideoStore.clearState()
+            return
+        }
+
+        do {
+            let info = try await WallpaperVideoStore.inspectVideo(url: storedURL)
+            let screenMap = Self.makeScreenMap()
+            let savedIDs = Set(state.screenIDs)
+            let availableIDs = savedIDs.intersection(screenMap.keys)
+            guard !availableIDs.isEmpty else {
+                Log.wallpaper.info("Dynamic wallpaper restore postponed: saved screens are not connected")
+                return
+            }
+
+            let started = dynamicController.start(
+                videoURL: storedURL,
+                screenIDs: availableIDs,
+                screens: screenMap
+            )
+            guard !started.isEmpty else {
+                throw WallpaperVideoError.unplayable(storedURL.lastPathComponent)
+            }
+
+            dynamicWallpaperInfo = info
+            dynamicWallpaperScreens = started
+            isDynamicWallpaperActive = true
+            if started != savedIDs {
+                persistDynamicWallpaperState()
+            }
+            Log.wallpaper.info(
+                "Dynamic wallpaper restored on \(started.count, privacy: .public) screen(s) from \(storedURL.lastPathComponent, privacy: .public)"
+            )
+            #if DEBUG
+            NSLog(
+                "Kaiming debug: dynamic wallpaper restored screens=\(started.count) video=\(storedURL.lastPathComponent)"
+            )
+            #endif
+            schedulePlaybackStatusLog()
+        } catch {
+            let message = error.localizedDescription
+            Log.wallpaper.error("Dynamic wallpaper restore failed: \(message, privacy: .public)")
+            AppState.shared.flash("动态壁纸恢复失败：\(message)", kind: .error)
+            await WallpaperVideoStore.clearState()
+        }
+    }
+
+    private func schedulePlaybackStatusLog() {
+        guard !dynamicWallpaperScreens.isEmpty else { return }
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            guard let self else { return }
+            for screenID in self.dynamicWallpaperScreens.sorted() {
+                let status = self.dynamicController.playbackStatus(for: screenID)
+                Log.wallpaper.info("Dynamic wallpaper playback \(screenID, privacy: .public): \(status, privacy: .public)")
+                #if DEBUG
+                NSLog("Kaiming debug: dynamic wallpaper playback \(screenID) \(status)")
+                #endif
+            }
+        }
+    }
+
     // MARK: - 文件夹轮换（可选能力）
 
     func startRotation(folder: URL, interval: TimeInterval, screenIDs: Set<String>) {
@@ -307,8 +566,11 @@ final class WallpaperManager: ObservableObject {
             do {
                 let storedURL = try await WallpaperFileStore.storeImageFile(file)
                 if Task.isCancelled || !isRotating { return }
-                let failures = applyWallpaper(storedURL, to: [screenID])
-                if !failures.isEmpty {
+                let result = applyWallpaper(storedURL, to: [screenID])
+                if !result.applied.isEmpty {
+                    detachDynamicWallpaper(screenIDs: result.applied)
+                }
+                if !result.failures.isEmpty {
                     failureCount += 1
                 }
             } catch {
@@ -353,18 +615,21 @@ final class WallpaperManager: ObservableObject {
     }
 
     private func finishInstall(storedURL: URL, screenIDs: Set<String>, announce: Bool) {
-        let failures = applyWallpaper(storedURL, to: screenIDs)
+        let result = applyWallpaper(storedURL, to: screenIDs)
+        if !result.applied.isEmpty {
+            detachDynamicWallpaper(screenIDs: result.applied)
+        }
         isBusy = false
         refreshScreens()
         scheduleCleanup()
 
         guard announce else { return }
-        if failures.isEmpty {
+        if result.failures.isEmpty {
             AppState.shared.flash("已设为壁纸", kind: .success)
-        } else if failures.count >= screenIDs.count {
-            AppState.shared.flash("设置壁纸失败：\(failures[0])", kind: .error)
+        } else if result.failures.count >= screenIDs.count {
+            AppState.shared.flash("设置壁纸失败：\(result.failures[0])", kind: .error)
         } else {
-            AppState.shared.flash("部分屏幕设置失败：\(failures.joined(separator: "；"))", kind: .error)
+            AppState.shared.flash("部分屏幕设置失败：\(result.failures.joined(separator: "；"))", kind: .error)
         }
     }
 
@@ -375,17 +640,17 @@ final class WallpaperManager: ObservableObject {
         AppState.shared.flash("设置壁纸失败：\(message)", kind: .error)
     }
 
-    /// 在主线程调用 `NSWorkspace.setDesktopImageURL`；返回失败原因列表。
+    /// 在主线程调用 `NSWorkspace.setDesktopImageURL`；返回成功应用的屏幕 id 与失败原因列表。
     @discardableResult
-    private func applyWallpaper(_ url: URL, to screenIDs: Set<String>) -> [String] {
+    private func applyWallpaper(_ url: URL, to screenIDs: Set<String>) -> (applied: Set<String>, failures: [String]) {
         guard FileManager.default.isReadableFile(atPath: url.path) else {
             Log.wallpaper.error("Wallpaper file is not readable: \(url.lastPathComponent, privacy: .public)")
-            return ["壁纸文件暂不可读，请重试"]
+            return ([], ["壁纸文件暂不可读，请重试"])
         }
 
         let screenMap = Self.makeScreenMap()
+        var applied: Set<String> = []
         var failures: [String] = []
-        var successCount = 0
 
         for screenID in screenIDs.sorted() {
             guard let screen = screenMap[screenID] else {
@@ -394,7 +659,7 @@ final class WallpaperManager: ObservableObject {
             }
             do {
                 try NSWorkspace.shared.setDesktopImageURL(url, for: screen, options: [:])
-                successCount += 1
+                applied.insert(screenID)
             } catch {
                 failures.append("\(screen.localizedName)：\(error.localizedDescription)")
                 Log.wallpaper.error(
@@ -404,9 +669,9 @@ final class WallpaperManager: ObservableObject {
         }
 
         Log.wallpaper.info(
-            "Applied \(url.lastPathComponent, privacy: .public) to \(successCount, privacy: .public) of \(screenIDs.count, privacy: .public) screen(s)"
+            "Applied \(url.lastPathComponent, privacy: .public) to \(applied.count, privacy: .public) of \(screenIDs.count, privacy: .public) screen(s)"
         )
-        return failures
+        return (applied, failures)
     }
 
     private func scheduleCleanup() {
@@ -426,6 +691,9 @@ final class WallpaperManager: ObservableObject {
             if let url = NSWorkspace.shared.desktopImageURL(for: screen) {
                 paths.insert(url.standardizedFileURL.path)
             }
+        }
+        if let dynamicURL = dynamicWallpaperInfo?.url {
+            paths.insert(dynamicURL.standardizedFileURL.path)
         }
         return paths
     }

@@ -198,3 +198,92 @@ struct MarkdownWindowView: View   // 整个独立窗口内容；KaimingApp 已�
 - 关键路径有 `Log` 日志；错误路径有用户可见提示。
 - 无 `TODO`/占位假数据；不引入新第三方依赖。
 - 回报：改动文件清单、构建结果、已验证 / 未验证的行为、已知风险。
+
+---
+
+# v1.1 扩展契约（新增需求）
+
+## 10. 新增共享类型
+
+```swift
+@MainActor final class MarkdownOpenRequest: ObservableObject {
+    struct Request: Equatable, Identifiable { let id: UUID; let folder: URL; var file: URL? }
+    static let shared
+    @Published private(set) var request: Request?
+    func open(folder: URL, file: URL? = nil)
+    func consume() -> Request?
+}
+
+enum AccessibilityPermission {
+    static var isTrusted: Bool
+    @discardableResult static func prompt() -> Bool
+    static func openSystemSettings()
+}
+```
+
+- `MarkdownOpenRequest` 是应用中心 / CLI / URL scheme 打开目录的唯一通道；
+  Markdown 模块用 `@ObservedObject` 观察并在 `onChange`/`onAppear` 消费。
+- 辅助功能权限仅用于长截图的自动滚动。
+
+## 11. 新增入口
+
+```swift
+// Clipboard
+struct ClipboardPickerView: View   // 独立 Window scene(id: "clipboard-picker")，无参
+// 全局快捷键 ⌥⇧C：HotKeyManager -> AppRouter.openClipboardPicker()
+// AppRouter.registerClipboardPicker(_:)
+```
+
+- 剪贴板选择窗口：搜索框默认聚焦；↑/↓ 移动；Return 复制并关闭；Esc 关闭；空状态提示。
+- 面板剪贴板页可增加「⌥⇧C 快速选择」提示，但不得嵌入编辑器/复杂窗口。
+
+## 12. Markdown 目录树
+
+- 侧边栏目录树（文件夹可展开，仅展示 `.md` / `.markdown` 文件，文件夹优先排序）。
+- 工具条「打开文件夹…」使用 `.fileImporter(allowedContentTypes: [.folder])`。
+- 外部请求 `MarkdownOpenRequest`：打开目录树；若带 `file` 则同时载入该文件。
+- 当前文档有未保存修改时，载入外部文件前必须确认；仅切换目录树不算破坏文档。
+
+## 13. 壁纸视频（动态壁纸）
+
+- 支持导入 `.mp4` / `.mov` 等视频；复制持久化到 `AppPaths.wallpapers`（UUID 文件名）。
+- macOS **没有公开 API** 把视频设为系统壁纸；实现为桌面层窗口：
+  `NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopWindow)) + 1)`，
+  `collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]`、
+  `ignoresMouseEvents = true`、无阴影，AVQueuePlayer + AVPlayerLooper 循环、静音。
+- 多显示器各一个窗口/播放器；关闭「动态壁纸」或退出 App 即停止；桌面图标应保持在上层。
+- 选择静态壁纸时，应停止对应屏幕的动态壁纸。
+- 在 `WallpaperManager.init` 中恢复上次启用的动态壁纸（App 启动时 `AppDelegate`
+  已 `_ = WallpaperManager.shared` 触发；恢复需延迟到窗口可用）。
+- 错误必须 `AppState.flash(.error)`；视频不可播放时拒绝并提示。
+
+## 14. 截图：圆角与长截图
+
+- 圆角：选区/标注工具栏提供 0–48pt 圆角调整，预览与最终 PNG 都应用圆角遮罩（圆角外透明）。
+- 长截图（仅区域模式）：
+  - 自动滚动：需 `AccessibilityPermission.isTrusted`；未授权时调用 `prompt()` 并说明，
+    同时提供「手动滚动拼接」降级路径。
+  - 自动滚动通过 `CGEvent` 向选区下方窗口发送滚轮事件；覆盖层在滚动/采集期间必须
+    忽略鼠标事件（避免拦截滚轮），结束后恢复。
+  - 每次滚动后用 `SCScreenshotManager.captureImage` 重新截取选区（本次运行不依赖冻结图），
+    用行哈希/重叠匹配拼接；无重叠或无变化时停止；最大高度 20000px。
+  - 采集期间显示进度与 Esc 取消；完成后进入预览/确认，复用现有编码/剪贴板/历史管线。
+  - 不允许静默失败；权限/未检测到滚动/高度超限都要有可操作提示。
+- 长截图与圆角可组合；普通截图行为不得回归。
+
+## 15. 应用中心与 CLI（Lead 负责）
+
+- 菜单栏面板新增第 4 个 tab「应用」：已安装应用网格（`/Applications`、`/System/Applications`、
+  `~/Applications`，可搜索、点击启动）+ 最近文件夹 + 「打开目录…」。
+- 打开目录会设置 `MarkdownOpenRequest.shared` 并 `AppRouter.openMarkdown()`。
+- CLI：`Scripts/kaiming ./docs` 经 `kaiming://open-folder?path=<base64url>` 唤起
+  Markdown 目录树；URL scheme 已在 `Config/Info.plist` 注册。
+- 该 tab 由 Lead 实现，不要修改。
+
+## 16. 测试钩子（DEBUG）
+
+```bash
+Kaiming --open-clipboard
+Kaiming --open-folder /abs/path
+Kaiming --snapshot-clipboard-picker /tmp/picker.png
+```

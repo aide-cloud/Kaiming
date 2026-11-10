@@ -5,9 +5,12 @@ import SwiftUI
 final class AnnotationSession: ObservableObject {
     @Published var tool: AnnotationTool = .select
     @Published var color: AnnotationColor = AnnotationColor.palette[0]
+    /// 圆角半径（点），0–48；预览与最终 PNG 共用。
+    @Published var cornerRadius: CGFloat = 0
     @Published private(set) var annotations: [Annotation] = []
 
     var hasAnnotations: Bool { !annotations.isEmpty }
+    var clampedCornerRadius: CGFloat { max(0, min(cornerRadius, 48)) }
 
     func add(_ annotation: Annotation) {
         annotations.append(annotation)
@@ -26,9 +29,12 @@ final class AnnotationSession: ObservableObject {
 
 /// 覆盖层底部/顶部的轻量标注工具栏。
 struct AnnotationToolbar: View {
-    static let preferredSize = CGSize(width: 432, height: 44)
+    static let preferredSize = CGSize(width: 660, height: 44)
 
     @ObservedObject var session: AnnotationSession
+    /// 只有区域截图（未进入长截图流程）才显示长截图入口。
+    let showsLongCapture: Bool
+    let onStartLongCapture: () -> Void
     let onComplete: () -> Void
     let onCancel: () -> Void
 
@@ -57,6 +63,22 @@ struct AnnotationToolbar: View {
             .disabled(!session.hasAnnotations)
             .help("撤销上一条标注")
 
+            divider
+
+            cornerRadiusControl
+
+            if showsLongCapture {
+                Button {
+                    onStartLongCapture()
+                } label: {
+                    Label("长截图", systemImage: "rectangle.expand.vertical")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("滚动拼接长网页或长列表（仅区域截图）")
+            }
+
             Spacer(minLength: 4)
 
             Button("完成") {
@@ -84,6 +106,22 @@ struct AnnotationToolbar: View {
                 .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
         )
         .shadow(color: Color.black.opacity(0.25), radius: 8, y: 2)
+    }
+
+    private var cornerRadiusControl: some View {
+        HStack(spacing: 4) {
+            Text("圆角")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+            Slider(value: $session.cornerRadius, in: 0...48, step: 1)
+                .frame(width: 72)
+                .controlSize(.mini)
+                .help("圆角半径 0–48 点；最终 PNG 圆角外透明")
+            Text("\(Int(session.clampedCornerRadius.rounded()))")
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .frame(width: 18, alignment: .trailing)
+        }
     }
 
     private var divider: some View {

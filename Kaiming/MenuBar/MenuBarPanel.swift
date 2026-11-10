@@ -180,6 +180,8 @@ struct MenuBarPanel: View {
                     ClipboardPanelView()
                 case .wallpaper:
                     WallpaperPanelView()
+                case .apps:
+                    AppCenterPanelView()
                 }
             }
             .padding(14)

@@ -7,6 +7,7 @@ enum HotKeyAction: String, CaseIterable, Identifiable, Sendable {
     case captureRegion
     case captureWindow
     case captureFullScreen
+    case openClipboard
     case openMarkdown
 
     var id: String { rawValue }
@@ -16,7 +17,8 @@ enum HotKeyAction: String, CaseIterable, Identifiable, Sendable {
         case .captureRegion: 1
         case .captureWindow: 2
         case .captureFullScreen: 3
-        case .openMarkdown: 4
+        case .openClipboard: 4
+        case .openMarkdown: 5
         }
     }
 
@@ -25,6 +27,7 @@ enum HotKeyAction: String, CaseIterable, Identifiable, Sendable {
         case .captureRegion: "区域截图"
         case .captureWindow: "窗口截图"
         case .captureFullScreen: "全屏截图"
+        case .openClipboard: "剪贴板快捷选择"
         case .openMarkdown: "Markdown 编辑器"
         }
     }
@@ -35,6 +38,7 @@ enum HotKeyAction: String, CaseIterable, Identifiable, Sendable {
         case .captureRegion: UInt32(kVK_ANSI_S)
         case .captureWindow: UInt32(kVK_ANSI_W)
         case .captureFullScreen: UInt32(kVK_ANSI_F)
+        case .openClipboard: UInt32(kVK_ANSI_C)
         case .openMarkdown: UInt32(kVK_ANSI_M)
         }
     }
@@ -49,6 +53,7 @@ enum HotKeyAction: String, CaseIterable, Identifiable, Sendable {
         case .captureRegion: "⌥⇧S"
         case .captureWindow: "⌥⇧W"
         case .captureFullScreen: "⌥⇧F"
+        case .openClipboard: "⌥⇧C"
         case .openMarkdown: "⌥⇧M"
         }
     }
@@ -210,6 +215,8 @@ final class HotKeyManager: ObservableObject {
             ScreenshotCoordinator.shared.start(mode: .window)
         case .captureFullScreen:
             ScreenshotCoordinator.shared.start(mode: .fullScreen)
+        case .openClipboard:
+            AppRouter.shared.openClipboardPicker()
         case .openMarkdown:
             AppRouter.shared.openMarkdown()
         }

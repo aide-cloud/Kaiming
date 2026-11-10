@@ -22,7 +22,7 @@ grep -rn "captureScreenshot" Kaiming --include='*.swift' || true          # 不�
 - [ ] `open build/dd/Build/Products/Debug/Kaiming.app` 后进程存活。
 - [ ] 菜单栏出现取景器图标；Dock 无图标（`LSUIElement`）。
 - [ ] 启动时**不**自动弹出 Markdown 窗口。
-- [ ] 菜单栏图标点击弹出 400×580 面板，三个 Tab 可切换。
+- [ ] 菜单栏图标点击弹出 400×580 面板，四个 Tab（截图/剪贴板/壁纸/应用）可切换。
 - [ ] 点面板右上 Markdown 图标打开独立窗口；关闭后可再次打开。
 - [ ] 设置窗口可打开（面板底部齿轮 / ⌘,）。
 
@@ -32,10 +32,14 @@ grep -rn "captureScreenshot" Kaiming --include='*.swift' || true          # 不�
 APP=build/dd/Build/Products/Debug/Kaiming.app
 "$APP/Contents/MacOS/Kaiming" --open-markdown          # 打开 Markdown 窗口
 "$APP/Contents/MacOS/Kaiming" --open-settings          # 打开设置窗口
-"$APP/Contents/MacOS/Kaiming" --snapshot-panel /tmp/panel.png [--snapshot-tab clipboard|wallpaper] [--snapshot-fake-capture]
+"$APP/Contents/MacOS/Kaiming" --open-clipboard         # 打开剪贴板快捷选择窗口
+"$APP/Contents/MacOS/Kaiming" --open-folder /abs/path  # 模拟 CLI 打开目录树
+"$APP/Contents/MacOS/Kaiming" --snapshot-panel /tmp/panel.png [--snapshot-tab clipboard|wallpaper|apps] [--snapshot-fake-capture]
 # --snapshot-fake-capture 用合成图片填充“刚截取的画面”快捷条，便于无 TCC 权限时验收
+"$APP/Contents/MacOS/Kaiming" --snapshot-clipboard-picker /tmp/picker.png
 "$APP/Contents/MacOS/Kaiming" --snapshot-markdown /tmp/markdown.png
 "$APP/Contents/MacOS/Kaiming" --snapshot-settings /tmp/settings.png
+"$APP/Contents/MacOS/Kaiming" --capture-test full      # 真实全屏截图（测试实例不写用户剪贴板）
 ```
 
 `--snapshot-*` 在进程内用真实 `NSWindow + NSHostingView` 渲染，不依赖屏幕录制权限。
@@ -143,3 +147,35 @@ log show --info --debug --last 5m --predicate 'subsystem == "com.kaiming.app"' -
 | 6 同一工程共享权限与设置 | 工程结构 + 1/7 |
 | 7 首次权限引导 | 2 全部 |
 | 8 可签名公证 | 8 全部 |
+
+## 10. v1.1 新功能验收
+
+### 剪贴板快捷选择
+- [ ] ⌥⇧C 在后台唤起 520×460 选择窗口，搜索框自动聚焦。
+- [ ] ↑/↓ 移动、Return 复制并关闭、Esc 关闭；中文输入法组合期间不抢键。
+- [ ] 搜索过滤文本/文件名/类型；空历史与无结果有提示；置顶标记正确。
+- [ ] 面板剪贴板页的「⌥⇧C」按钮可打开同一窗口。
+
+### Markdown 目录树 / CLI
+- [ ] 工具栏「打开文件夹…」选择目录后侧边栏显示文件树，文件夹优先，只有 `.md/.markdown`。
+- [ ] 点击文件载入、当前文件高亮、展开/折叠、刷新、侧边栏隐藏/显示。
+- [ ] 外部打开：`./Scripts/kaiming ./docs` 或 `--open-folder "$PWD/docs"` 打开目录树。
+- [ ] 脏文档时仅切目录不弹确认；载入文件前弹确认，取消后内容保留。
+- [ ] `./Scripts/install-cli.sh` 后 `kaiming ./docs` 冷启动/热启动均能打开。
+
+### 应用中心
+- [ ] 「应用」tab 显示已安装应用图标网格、数量、搜索；点击可启动；右键可在 Finder 显示。
+- [ ] 「打开目录…」跳转 Markdown 目录树；最近目录可点击复用并可清除。
+- [ ] 88+ 应用时滚动流畅；刷新不卡主线程。
+
+### 视频动态壁纸
+- [ ] 壁纸页切换「视频」，选择 MP4/MOV 后显示首帧、时长、分辨率。
+- [ ] 启用后桌面层窗口出现（level = desktopWindow+1），循环静音播放；桌面图标仍在视频上方。
+- [ ] 停止后窗口消失；退出 App 后停止；重启 App 恢复上次启用状态。
+- [ ] 应用静态壁纸会停止对应屏动态壁纸；无系统「视频壁纸」API 的说明可见。
+
+### 截图圆角 / 长截图
+- [ ] 圆角 0–48pt 可调，预览与导出 PNG 一致，圆角外透明。
+- [ ] 区域长截图：自动滚动需辅助功能权限；未授权时提示并可手动滚动拼接。
+- [ ] 拼接结果无重复内容/无断裂；无变化、超过 20000px、Esc 取消均正确提示。
+- [ ] 长截图结果进入预览确认，之后正常写剪贴板/历史/自动保存。

@@ -15,6 +15,16 @@ enum MarkdownFileTypes {
         let markdown = markdown
         return markdown == .plainText ? [.plainText] : [markdown, .plainText]
     }
+
+    /// 侧边栏只展示 Markdown 文件（扩展名大小写不敏感）。
+    static func isMarkdownFile(_ url: URL) -> Bool {
+        switch url.pathExtension.lowercased() {
+        case "md", "markdown":
+            return true
+        default:
+            return false
+        }
+    }
 }
 
 /// 供 `.fileExporter` 使用的纯文本文件文档。

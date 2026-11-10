@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# 在当前目录/指定路径打开 Kaiming Markdown 目录树。
+# 用法: kaiming [目录或 .md 文件] [-- 无]
+# 安装: ln -s "$(cd "$(dirname "$0")" && pwd)/Scripts/kaiming" /usr/local/bin/kaiming
+set -euo pipefail
+
+target="${1:-.}"
+
+if [ ! -e "$target" ]; then
+  echo "kaiming: 路径不存在: $target" >&2
+  exit 1
+fi
+
+if [ -d "$target" ]; then
+  abs="$(cd "$target" && pwd)"
+else
+  abs="$(cd "$(dirname "$target")" && pwd)/$(basename "$target")"
+fi
+
+# base64url（去掉 = 填充），交给 kaiming:// URL scheme 解析
+encoded="$(printf '%s' "$abs" | /usr/bin/base64 | tr -d '\n' | tr '+/' '-_' | tr -d '=')"
+/usr/bin/open "kaiming://open-folder?path=$encoded"

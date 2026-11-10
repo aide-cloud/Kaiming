@@ -7,8 +7,10 @@ import SwiftUI
 /// 生命周期：
 /// 1. 外部先在主线程完成「冻结截图」，再把每块屏幕的位图交给本控制器；
 /// 2. `present()` 为每块屏幕创建一个 `.screenSaver` 级别的无边框窗口；
-/// 3. 用户框选/点选后进入标注阶段，`confirm()` 把底图与标注拍平后通过 `onFinish` 回传；
-/// 4. `teardown()` 移除事件监听、输入框、工具栏与全部窗口，避免循环引用。
+/// 3. 用户框选/点选后进入标注阶段，`confirm()` 把底图、标注与圆角遮罩拍平后通过 `onFinish` 回传；
+/// 4. 区域截图可进入长截图：隐藏覆盖层、用 CGEvent/用户滚动逐帧重新截取选区，
+///    行哈希拼接后回到预览确认；
+/// 5. `teardown()` 移除事件监听、输入框、工具栏、长截图任务与全部窗口，避免循环引用。
 @MainActor
 final class CaptureOverlayController: NSObject {
     enum Mode {
@@ -38,13 +40,14 @@ final class CaptureOverlayController: NSObject {
         enum Source {
             case region
             case window
+            case longPreview
         }
 
         let screen: FrozenScreen
         var rect: CGRect
         let image: CGImage?
         let source: Source
-        /// 窗口截图时显示在选区上方的窗口标题。
+        /// 窗口标题 / 长截图信息，显示在选区上方。
         let title: String?
     }
 
@@ -54,6 +57,39 @@ final class CaptureOverlayController: NSObject {
         case resizing(handle: ScreenGeometry.Handle, initial: CGRect)
         case moving(start: CGPoint, initial: CGRect)
         case annotating(kind: Annotation.Kind, start: CGPoint)
+    }
+
+    private enum LongCapturePhase {
+        case idle
+        case choosing
+        case capturing
+        case preview
+    }
+
+    private enum LongCaptureStopReason {
+        case userFinished
+        case noChange
+        case manualIdle
+        case noOverlap
+        case heightLimit
+        case frameLimit
+
+        var message: String {
+            switch self {
+            case .userFinished:
+                "长截图已生成，请确认后保存。"
+            case .noChange:
+                "页面内容没有变化，已停止：可能已到页面顶部/底部，或自动滚动未生效。已保留当前采集内容，可确认或改用手动滚动拼接。"
+            case .manualIdle:
+                "长时间没有检测到页面滚动，已停止并保留当前内容。可点「完成」确认，或返回后重新进入长截图继续采集。"
+            case .noOverlap:
+                "未检测到与上一屏的重叠区域，已停止：滚动幅度可能过大，或页面含固定标题栏。已保留当前采集内容，可确认或改用手动滚动拼接。"
+            case .heightLimit:
+                "已达到 20000px 高度上限，已停止并保留当前内容。"
+            case .frameLimit:
+                "已达到采集屏数上限，已停止并保留当前内容。"
+            }
+        }
     }
 
     let mode: Mode
@@ -84,6 +120,22 @@ final class CaptureOverlayController: NSObject {
     private var textFieldOrigin: CGPoint = .zero
     private var isCommittingText = false
 
+    // MARK: 长截图
+
+    private var longCapturePhase: LongCapturePhase = .idle
+    private var longCaptureMode: LongScreenshotMode = .manual
+    private var longCaptureSessionID = UUID()
+    private var longCaptureTask: Task<Void, Never>?
+    private var composer = LongScreenshotComposer()
+    private var longCaptureBarHost: NSHostingView<LongCaptureBar>?
+    private var longCaptureHUDWindow: OverlayWindow?
+    private var longCaptureHUDHost: NSHostingView<LongCaptureHUD>?
+    private let longCaptureOptions = LongCaptureOptionsModel()
+    private let longCaptureProgress = LongCaptureProgressModel()
+    private var noticeText: String?
+    private var noticeIsError = false
+    private var noticeTask: Task<Void, Never>?
+
     init(
         mode: Mode,
         frozenScreens: [FrozenScreen],
@@ -100,6 +152,18 @@ final class CaptureOverlayController: NSObject {
             frozenScreens: frozenScreens,
             mainScreenFrame: NSScreen.main?.frame ?? .zero
         )
+    }
+
+    private var isOverlayMouseEnabled: Bool {
+        switch longCapturePhase {
+        case .idle, .preview: true
+        case .choosing, .capturing: false
+        }
+    }
+
+    private var isLongCapturing: Bool {
+        if case .capturing = longCapturePhase { return true }
+        return false
     }
 
     // MARK: - 生命周期
@@ -161,6 +225,7 @@ final class CaptureOverlayController: NSObject {
         }
         guard let target else { return }
 
+        let cornerRadius = session.clampedCornerRadius
         let flattened: CGImage?
         switch target.source {
         case .region:
@@ -179,17 +244,19 @@ final class CaptureOverlayController: NSObject {
             flattened = AnnotationDrawing.render(
                 baseImage: cropped,
                 annotations: session.annotations,
-                boundsInPoints: target.rect.size
+                boundsInPoints: target.rect.size,
+                cornerRadius: cornerRadius
             )
-        case .window:
+        case .window, .longPreview:
             guard let image = target.image else {
-                fail("窗口截图数据丢失，请重新截图。")
+                fail("截图数据丢失，请重新截图。")
                 return
             }
             flattened = AnnotationDrawing.render(
                 baseImage: image,
                 annotations: session.annotations,
-                boundsInPoints: target.rect.size
+                boundsInPoints: target.rect.size,
+                cornerRadius: cornerRadius
             )
         }
 
@@ -197,12 +264,18 @@ final class CaptureOverlayController: NSObject {
             fail("生成标注图像失败，请重试。")
             return
         }
-        Log.screenshot.info("Capture confirmed with \(self.session.annotations.count, privacy: .public) annotations")
+        Log.screenshot.info(
+            "Capture confirmed audio=\(self.session.annotations.count, privacy: .public) radius=\(Int(cornerRadius), privacy: .public)"
+        )
         finish(with: image)
     }
 
     func cancel() {
         guard !isFinished else { return }
+        if isLongCapturing {
+            cancelLongCapture()
+            return
+        }
         isFinished = true
         let callback = onCancel
         teardown()
@@ -210,13 +283,40 @@ final class CaptureOverlayController: NSObject {
     }
 
     func handleKeyDown(_ event: NSEvent) -> NSEvent? {
-        guard !isFinished else { return event }
-        guard let eventWindow = event.window, windows.contains(where: { $0 === eventWindow }) else {
-            return event
+        guard !isFinished, let eventWindow = event.window else { return event }
+        let consumed = handleMonitoredKey(keyCode: event.keyCode, windowNumber: eventWindow.windowNumber)
+        return consumed ? nil : event
+    }
+
+    private func handleMonitoredKey(keyCode: UInt16, windowNumber: Int) -> Bool {
+        guard !isFinished, textField == nil else { return false }
+
+        switch longCapturePhase {
+        case .capturing:
+            guard longCaptureHUDWindow?.windowNumber == windowNumber else { return false }
+            switch keyCode {
+            case 53: // Esc
+                cancelLongCapture()
+                return true
+            case 36, 76: // Return / 小键盘 Enter
+                finishLongCaptureFromUser()
+                return true
+            default:
+                return false
+            }
+
+        case .choosing:
+            guard windows.contains(where: { $0.windowNumber == windowNumber }) else { return false }
+            if keyCode == 53 {
+                cancelLongCaptureChoosing()
+                return true
+            }
+            return false
+
+        case .idle, .preview:
+            guard windows.contains(where: { $0.windowNumber == windowNumber }) else { return false }
+            return handleKeyCode(keyCode)
         }
-        // 文本输入中把按键完全交给 field editor。
-        guard textField == nil else { return event }
-        return handleKeyCode(event.keyCode) ? nil : event
     }
 
     /// 返回 true 表示事件已被消费（Return 确认 / Esc 取消）。
@@ -247,6 +347,15 @@ final class CaptureOverlayController: NSObject {
     }
 
     private func teardown() {
+        longCaptureTask?.cancel()
+        longCaptureTask = nil
+        longCapturePhase = .idle
+        closeLongCaptureHUD()
+        removeLongCaptureBar()
+        noticeTask?.cancel()
+        noticeTask = nil
+        noticeText = nil
+
         if let keyMonitor {
             NSEvent.removeMonitor(keyMonitor)
             self.keyMonitor = nil
@@ -295,13 +404,6 @@ final class CaptureOverlayController: NSObject {
         }
     }
 
-    /// 键盘监控入口：只处理落在覆盖层窗口上的 Return / Esc。
-    private func handleMonitoredKey(keyCode: UInt16, windowNumber: Int) -> Bool {
-        guard !isFinished, textField == nil else { return false }
-        guard windows.contains(where: { $0.windowNumber == windowNumber }) else { return false }
-        return handleKeyCode(keyCode)
-    }
-
     private func observeSession() {
         session.$annotations
             .sink { [weak self] _ in
@@ -318,12 +420,17 @@ final class CaptureOverlayController: NSObject {
                 MainActor.assumeIsolated { self?.refreshViews() }
             }
             .store(in: &cancellables)
+        session.$cornerRadius
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated { self?.refreshViews() }
+            }
+            .store(in: &cancellables)
     }
 
     // MARK: - 鼠标交互
 
     func mouseDown(at point: CGPoint, in frozenScreen: FrozenScreen, clickCount: Int) {
-        guard !isFinished, !isCapturingWindow else { return }
+        guard isOverlayMouseEnabled, !isFinished, !isCapturingWindow else { return }
         let local = ScreenGeometry.clamped(point, to: screenBounds(frozenScreen))
 
         if let target {
@@ -376,7 +483,7 @@ final class CaptureOverlayController: NSObject {
     }
 
     func mouseDragged(at point: CGPoint, in frozenScreen: FrozenScreen) {
-        guard !isFinished else { return }
+        guard isOverlayMouseEnabled, !isFinished else { return }
         let local = ScreenGeometry.clamped(point, to: screenBounds(frozenScreen))
 
         switch interaction {
@@ -420,7 +527,7 @@ final class CaptureOverlayController: NSObject {
     }
 
     func mouseUp(at point: CGPoint, in frozenScreen: FrozenScreen) {
-        guard !isFinished else { return }
+        guard isOverlayMouseEnabled, !isFinished else { return }
 
         switch interaction {
         case .selecting:
@@ -436,7 +543,7 @@ final class CaptureOverlayController: NSObject {
                     title: nil
                 )
                 session.clear()
-                showToolbar()
+                showToolbar(showsLongCapture: true)
                 Log.screenshot.info(
                     "Region selected \(Int(rect.width), privacy: .public)x\(Int(rect.height), privacy: .public) on display \(activeScreen.displayID, privacy: .public)"
                 )
@@ -463,7 +570,7 @@ final class CaptureOverlayController: NSObject {
     }
 
     func mouseMoved(at point: CGPoint, in frozenScreen: FrozenScreen) {
-        guard !isFinished, !isCapturingWindow else { return }
+        guard isOverlayMouseEnabled, !isFinished, !isCapturingWindow else { return }
         guard mode == .window, target == nil else { return }
         let local = ScreenGeometry.clamped(point, to: screenBounds(frozenScreen))
         let candidate = candidate(at: globalPoint(for: local, in: frozenScreen))
@@ -473,7 +580,7 @@ final class CaptureOverlayController: NSObject {
     }
 
     func cursor(at point: CGPoint, in frozenScreen: FrozenScreen) -> NSCursor {
-        guard !isFinished else { return .arrow }
+        guard !isFinished, isOverlayMouseEnabled else { return .arrow }
         let local = ScreenGeometry.clamped(point, to: screenBounds(frozenScreen))
 
         switch mode {
@@ -499,6 +606,7 @@ final class CaptureOverlayController: NSObject {
                 }
                 if target.rect.contains(local) {
                     if session.tool == .select {
+                        if target.source != .region { return .arrow }
                         return isMoving ? .closedHand : .openHand
                     }
                     return .crosshair
@@ -564,7 +672,7 @@ final class CaptureOverlayController: NSObject {
         )
         hoveredCandidate = nil
         session.clear()
-        showToolbar()
+        showToolbar(showsLongCapture: false)
         refreshViews()
         Log.screenshot.info(
             "Window target ready \(Int(localRect.width), privacy: .public)x\(Int(localRect.height), privacy: .public)"
@@ -642,29 +750,24 @@ final class CaptureOverlayController: NSObject {
 
     private var isEditingText: Bool { textField != nil }
 
-    // MARK: - 工具栏
+    // MARK: - 工具栏 / 长截图入口
 
-    private func showToolbar() {
-        guard let target, let view = view(for: target.screen) else {
-            removeToolbar()
-            return
-        }
-        if toolbarHost == nil {
-            let host = NSHostingView(
-                rootView: AnnotationToolbar(
-                    session: session,
-                    onComplete: { [weak self] in self?.confirm() },
-                    onCancel: { [weak self] in self?.cancel() }
-                )
+    private func showToolbar(showsLongCapture: Bool) {
+        removeToolbar()
+        removeLongCaptureBar()
+        guard let target, let view = view(for: target.screen) else { return }
+        let host = NSHostingView(
+            rootView: AnnotationToolbar(
+                session: session,
+                showsLongCapture: showsLongCapture,
+                onStartLongCapture: { [weak self] in self?.beginLongCaptureChoosing() },
+                onComplete: { [weak self] in self?.confirm() },
+                onCancel: { [weak self] in self?.cancel() }
             )
-            host.frame = CGRect(origin: .zero, size: AnnotationToolbar.preferredSize)
-            toolbarHost = host
-        }
-        guard let host = toolbarHost else { return }
-        if host.superview !== view {
-            host.removeFromSuperview()
-            view.addSubview(host)
-        }
+        )
+        host.frame = CGRect(origin: .zero, size: AnnotationToolbar.preferredSize)
+        toolbarHost = host
+        view.addSubview(host)
         layoutToolbar()
     }
 
@@ -678,19 +781,543 @@ final class CaptureOverlayController: NSObject {
             removeToolbar()
             return
         }
-        let size = AnnotationToolbar.preferredSize
-        let screenSize = target.screen.screen.frame.size
-        let rect = target.rect
-
-        var originX = rect.midX - size.width / 2
-        var originY = rect.minY - size.height - 10
-        if originY < 12 {
-            originY = min(rect.maxY + 10, screenSize.height - size.height - 12)
-        }
-        originX = min(max(originX, 12), max(12, screenSize.width - size.width - 12))
-        originY = min(max(originY, 12), max(12, screenSize.height - size.height - 12))
-        host.frame = CGRect(x: originX, y: originY, width: size.width, height: size.height)
+        host.frame = floatingFrame(
+            size: AnnotationToolbar.preferredSize,
+            targetRect: target.rect,
+            viewBounds: screenBounds(target.screen)
+        )
         view.window?.invalidateCursorRects(for: view)
+    }
+
+    private func beginLongCaptureChoosing() {
+        guard !isFinished, longCapturePhase == .idle, let target, target.source == .region,
+              let view = view(for: target.screen) else { return }
+        if textField != nil {
+            commitTextEditing()
+        }
+        longCapturePhase = .choosing
+        longCaptureOptions.accessibilityTrusted = AccessibilityPermission.isTrusted
+        longCaptureOptions.message = nil
+        removeToolbar()
+        removeLongCaptureBar()
+
+        let host = NSHostingView(
+            rootView: LongCaptureBar(
+                model: longCaptureOptions,
+                onAutomatic: { [weak self] in self?.attemptAutomaticLongCapture() },
+                onManual: { [weak self] in self?.startLongCapture(mode: .manual) },
+                onBack: { [weak self] in self?.cancelLongCaptureChoosing() },
+                onOpenAccessibilitySettings: {
+                    AccessibilityPermission.openSystemSettings()
+                }
+            )
+        )
+        host.frame = CGRect(origin: .zero, size: LongCaptureBar.preferredSize)
+        longCaptureBarHost = host
+        view.addSubview(host)
+        layoutLongCaptureBar()
+        refreshViews()
+        Log.screenshot.info("Long capture mode chooser presented")
+    }
+
+    private func attemptAutomaticLongCapture() {
+        guard longCapturePhase == .choosing else { return }
+        var trusted = AccessibilityPermission.isTrusted
+        if !trusted {
+            _ = AccessibilityPermission.prompt()
+            trusted = AccessibilityPermission.isTrusted
+            longCaptureOptions.accessibilityTrusted = trusted
+        }
+        guard trusted else {
+            longCaptureOptions.message = "辅助功能未授权：请在“系统设置 › 隐私与安全性 › 辅助功能”中勾选 Kaiming，并重新启动应用；也可以直接手动滚动拼接。"
+            Log.screenshot.error("Long capture auto scroll blocked: accessibility not trusted")
+            return
+        }
+        longCaptureOptions.accessibilityTrusted = true
+        startLongCapture(mode: .automatic)
+    }
+
+    private func cancelLongCaptureChoosing() {
+        guard longCapturePhase == .choosing else { return }
+        removeLongCaptureBar()
+        longCapturePhase = .idle
+        if let target, target.source == .region {
+            showToolbar(showsLongCapture: true)
+        }
+        refreshViews()
+    }
+
+    private func startLongCapture(mode: LongScreenshotMode) {
+        guard longCapturePhase == .choosing, let target, target.source == .region else { return }
+        longCapturePhase = .capturing
+        longCaptureMode = mode
+        longCaptureSessionID = UUID()
+        let sessionID = longCaptureSessionID
+        // 自动滚动步长约为选区高度的 55%，因此重叠窗口按帧高度的 80% 配置，
+        // 兼容高分辨率/大选区（默认 1600px 在高分屏下可能不够）。
+        let estimatedFrameHeight = max(1, Int(target.rect.height * max(target.screen.scale, 1)))
+        let overlapWindow = min(6_000, max(600, Int(Double(estimatedFrameHeight) * 0.8)))
+        composer = LongScreenshotComposer(maximumOverlap: overlapWindow)
+        session.clear()
+        removeLongCaptureBar()
+        removeToolbar()
+        hideOverlaysForLongCapture()
+        showLongCaptureHUD(on: target.screen, mode: mode)
+        updateLongProgress(for: nil, mode: mode, statusOverride: "正在截取第一屏…")
+        Log.screenshot.info(
+            "Long capture started mode=\(mode.rawValue, privacy: .public) display=\(target.screen.displayID, privacy: .public) selection=\(Int(target.rect.width), privacy: .public)x\(Int(target.rect.height), privacy: .public)pt"
+        )
+
+        longCaptureTask = Task { @MainActor [weak self] in
+            await self?.runLongCapture(sessionID: sessionID)
+        }
+    }
+
+    private func layoutLongCaptureBar() {
+        guard let target, let host = longCaptureBarHost, let view = view(for: target.screen) else {
+            return
+        }
+        host.frame = floatingFrame(
+            size: LongCaptureBar.preferredSize,
+            targetRect: target.rect,
+            viewBounds: screenBounds(target.screen)
+        )
+        view.window?.invalidateCursorRects(for: view)
+    }
+
+    private func removeLongCaptureBar() {
+        longCaptureBarHost?.removeFromSuperview()
+        longCaptureBarHost = nil
+    }
+
+    // MARK: - 长截图采集
+
+    private func hideOverlaysForLongCapture() {
+        for window in windows {
+            window.ignoresMouseEvents = true
+            window.orderOut(nil)
+        }
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func restoreOverlays() {
+        for window in windows {
+            window.ignoresMouseEvents = false
+            window.orderFrontRegardless()
+        }
+        if let target,
+           let index = frozenScreens.firstIndex(where: { $0.displayID == target.screen.displayID }),
+           windows.indices.contains(index) {
+            windows[index].makeKey()
+            if views.indices.contains(index) {
+                windows[index].makeFirstResponder(views[index])
+            }
+        }
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func showLongCaptureHUD(on frozen: FrozenScreen, mode: LongScreenshotMode) {
+        closeLongCaptureHUD()
+        let size = LongCaptureHUD.preferredSize
+        let screenFrame = frozen.screen.frame
+        let frame = CGRect(
+            x: screenFrame.midX - size.width / 2,
+            y: screenFrame.maxY - size.height - 24,
+            width: size.width,
+            height: size.height
+        )
+        let window = OverlayWindow(
+            contentRect: frame,
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false,
+            screen: frozen.screen
+        )
+        window.level = .screenSaver
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = false
+        window.ignoresMouseEvents = false
+        window.isReleasedWhenClosed = false
+
+        let host = NSHostingView(
+            rootView: LongCaptureHUD(
+                model: longCaptureProgress,
+                onFinish: { [weak self] in self?.finishLongCaptureFromUser() },
+                onCancel: { [weak self] in self?.cancelLongCapture() }
+            )
+        )
+        host.frame = CGRect(origin: .zero, size: size)
+        window.contentView = host
+        window.orderFrontRegardless()
+        window.makeKey()
+        window.makeFirstResponder(host)
+        longCaptureHUDWindow = window
+        longCaptureHUDHost = host
+        longCaptureProgress.modeTitle = mode.title
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func closeLongCaptureHUD() {
+        longCaptureHUDWindow?.orderOut(nil)
+        longCaptureHUDWindow?.close()
+        longCaptureHUDWindow = nil
+        longCaptureHUDHost = nil
+    }
+
+    private func runLongCapture(sessionID: UUID) async {
+        guard let target, target.source == .region,
+              longCapturePhase == .capturing,
+              longCaptureSessionID == sessionID else { return }
+        let screen = target.screen.screen
+        let selection = target.rect
+        let selectionCenterGlobal = ScreenGeometry.globalPoint(
+            fromLocal: CGPoint(x: selection.midX, y: selection.midY),
+            screenFrame: screen.frame
+        )
+        // 长截图的逐帧画面不采集鼠标指针：指针停在选区里会破坏行哈希重叠匹配。
+        let showsCursor = false
+        let selectedMode = longCaptureMode
+
+        // 第一帧：每次都用 SCK 重新截取选区，不使用冻结图。
+        do {
+            let frame = try await captureSelectionFrame(
+                screen: screen,
+                selection: selection,
+                showsCursor: showsCursor
+            )
+            guard isCurrentLongCapture(sessionID) else { return }
+            let result = composer.append(frame)
+            guard isCurrentLongCapture(sessionID) else { return }
+            updateLongProgress(for: result, mode: selectedMode)
+            if case .failed = result {
+                stopLongCaptureWithError("第一帧无法拼接，请重试。")
+                return
+            }
+        } catch {
+            stopLongCaptureWithError(longCaptureErrorMessage(error))
+            return
+        }
+
+        var idleSteps = 0
+        var stepCount = 0
+        let maximumSteps = selectedMode == .automatic ? 80 : 300
+
+        while isCurrentLongCapture(sessionID) {
+            if composer.totalHeight >= LongScreenshotComposer.maxHeightPixels {
+                finishLongCapture(reason: .heightLimit)
+                return
+            }
+
+            if selectedMode == .automatic {
+                let step = max(24, Int(selection.height * 0.55))
+                postScrollEvent(stepPoints: step, atGlobal: selectionCenterGlobal)
+            }
+
+            do {
+                // 自动滚动的等待包含滚动动画时间；手动模式则固定间隔采样。
+                try await Task.sleep(
+                    nanoseconds: selectedMode == .automatic ? 550_000_000 : 900_000_000
+                )
+            } catch {
+                return
+            }
+            guard isCurrentLongCapture(sessionID) else { return }
+
+            do {
+                let frame = try await captureSelectionFrame(
+                    screen: screen,
+                    selection: selection,
+                    showsCursor: showsCursor
+                )
+                guard isCurrentLongCapture(sessionID) else { return }
+                let result = composer.append(frame)
+                guard isCurrentLongCapture(sessionID) else { return }
+
+                switch result {
+                case .firstFrame:
+                    break
+                case let .appended(_, added, _, headerTrimmed):
+                    idleSteps = 0
+                    updateLongProgress(for: result, mode: selectedMode)
+                    Log.screenshot.info(
+                        "Long capture appended \(added, privacy: .public)px total=\(self.composer.totalHeight, privacy: .public)px header=\(headerTrimmed, privacy: .public)px"
+                    )
+                case .noChange:
+                    if selectedMode == .automatic {
+                        idleSteps += 1
+                        updateLongProgress(for: result, mode: selectedMode)
+                        if idleSteps >= 2 {
+                            finishLongCapture(reason: .noChange)
+                            return
+                        }
+                    } else {
+                        idleSteps += 1
+                        updateLongProgress(
+                            for: result,
+                            mode: selectedMode,
+                            statusOverride: idleSteps >= 3
+                                ? "等待页面滚动…（长时间无变化会自动停止）"
+                                : "等待页面滚动…"
+                        )
+                        if idleSteps >= 60 {
+                            finishLongCapture(reason: .manualIdle)
+                            return
+                        }
+                    }
+                case .noOverlap:
+                    finishLongCapture(reason: .noOverlap)
+                    return
+                case .heightLimit:
+                    finishLongCapture(reason: .heightLimit)
+                    return
+                case .failed:
+                    stopLongCaptureWithError("当前画面无法拼接，已停止。")
+                    return
+                }
+            } catch {
+                stopLongCaptureWithError(longCaptureErrorMessage(error))
+                return
+            }
+
+            stepCount += 1
+            if stepCount >= maximumSteps {
+                finishLongCapture(reason: .frameLimit)
+                return
+            }
+        }
+    }
+
+    private func captureSelectionFrame(
+        screen: NSScreen,
+        selection: CGRect,
+        showsCursor: Bool
+    ) async throws -> CGImage {
+        guard let displayID = Self.displayID(of: screen) else {
+            throw ScreenshotError.noDisplay
+        }
+        return try await ScreenCaptureService.captureRegion(
+            displayID: displayID,
+            selectionInScreen: selection,
+            screenPointSize: screen.frame.size,
+            showsCursor: showsCursor
+        )
+    }
+
+    private func longCaptureErrorMessage(_ error: Error) -> String {
+        let detail = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        return "长截图采集失败：\(detail)"
+    }
+
+    private func isCurrentLongCapture(_ sessionID: UUID) -> Bool {
+        !Task.isCancelled
+            && !isFinished
+            && longCapturePhase == .capturing
+            && longCaptureSessionID == sessionID
+    }
+
+    private func postScrollEvent(stepPoints: Int, atGlobal point: CGPoint) {
+        let mainHeight = NSScreen.main?.frame.maxY ?? 0
+        guard let event = CGEvent(
+            scrollWheelEvent2Source: nil,
+            units: .pixel,
+            wheelCount: 1,
+            wheel1: Int32(-max(1, stepPoints)),
+            wheel2: 0,
+            wheel3: 0
+        ) else {
+            Log.screenshot.error("Unable to create long capture scroll event")
+            return
+        }
+        // CGEvent 使用主屏左上角为原点的坐标。
+        event.location = CGPoint(x: point.x, y: mainHeight - point.y)
+        event.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
+        event.post(tap: .cghidEventTap)
+    }
+
+    private func updateLongProgress(
+        for result: LongScreenshotComposer.AppendResult?,
+        mode: LongScreenshotMode,
+        statusOverride: String? = nil
+    ) {
+        longCaptureProgress.modeTitle = mode.title
+        if composer.totalHeight > 0 {
+            longCaptureProgress.dimensionText = "\(composer.pixelWidth) × \(composer.totalHeight) px"
+        } else {
+            longCaptureProgress.dimensionText = ""
+        }
+        longCaptureProgress.progress = min(
+            1,
+            Double(composer.totalHeight) / Double(LongScreenshotComposer.maxHeightPixels)
+        )
+
+        if let statusOverride {
+            longCaptureProgress.statusText = statusOverride
+        } else if let result {
+            switch result {
+            case .firstFrame:
+                longCaptureProgress.statusText = "已截取第一屏，等待滚动…"
+            case let .appended(_, added, _, headerTrimmed):
+                var text = "已采集 \(composer.frameCount) 屏，本次新增 \(added) px"
+                if headerTrimmed > 0 {
+                    text += "（已折叠固定标题 \(headerTrimmed)px）"
+                }
+                longCaptureProgress.statusText = text
+            case .noChange:
+                longCaptureProgress.statusText = mode == .automatic
+                    ? "页面没有变化：可能已到顶部/底部，或自动滚动未生效…"
+                    : "等待页面滚动…"
+            case .noOverlap:
+                longCaptureProgress.statusText = "未检测到与上一屏的重叠区域。"
+            case .heightLimit:
+                longCaptureProgress.statusText = "已达到 20000px 高度上限。"
+            case .failed:
+                longCaptureProgress.statusText = "当前帧无法处理。"
+            }
+        }
+
+        longCaptureProgress.hintText = mode == .automatic
+            ? "自动滚动中：若页面未移动，请检查辅助功能权限或改用手动滚动。Return 提前完成 · Esc 取消。"
+            : "滚动页面即可自动采样。Return 完成 · Esc 取消；若网页抢走焦点，可点本面板按钮。"
+    }
+
+    private func finishLongCaptureFromUser() {
+        guard longCapturePhase == .capturing else { return }
+        finishLongCapture(reason: .userFinished)
+    }
+
+    private func finishLongCapture(reason: LongCaptureStopReason) {
+        guard longCapturePhase == .capturing else { return }
+        longCaptureTask?.cancel()
+        longCaptureTask = nil
+
+        guard let target, target.source == .region, let image = composer.image else {
+            stopLongCaptureWithError("没有采集到可以拼接的画面，请重试。")
+            return
+        }
+        let headerHeight = composer.fixedHeaderHeight
+        let totalHeight = composer.totalHeight
+        let frameCount = composer.frameCount
+        let sourceScreen = target.screen
+
+        longCapturePhase = .preview
+        closeLongCaptureHUD()
+        restoreOverlays()
+
+        self.target = previewTarget(for: image, on: sourceScreen)
+        // 预览持有裁剪后的 CGImage，可以释放拼接画布，避免长图在内存里保留多份。
+        composer = LongScreenshotComposer()
+        showToolbar(showsLongCapture: false)
+        refreshViews()
+
+        var message = reason.message
+        if headerHeight > 0 {
+            message += "（检测到固定标题栏：只保留首帧标题，后续帧已折叠 \(headerHeight)px）"
+        }
+        showOverlayNotice(message, isError: false)
+        Log.screenshot.info(
+            "Long capture finished height=\(totalHeight, privacy: .public)px frames=\(frameCount, privacy: .public) header=\(headerHeight, privacy: .public)"
+        )
+    }
+
+    private func previewTarget(for image: CGImage, on frozen: FrozenScreen) -> Target {
+        let scale = max(frozen.scale, 0.5)
+        let pointSize = CGSize(
+            width: CGFloat(image.width) / scale,
+            height: CGFloat(image.height) / scale
+        )
+        let screenSize = frozen.screen.frame.size
+        let maxWidth = max(120, screenSize.width * 0.74)
+        let maxHeight = max(120, screenSize.height * 0.70)
+        let factor = min(
+            1,
+            maxWidth / max(pointSize.width, 1),
+            maxHeight / max(pointSize.height, 1)
+        )
+        let displaySize = CGSize(
+            width: pointSize.width * factor,
+            height: pointSize.height * factor
+        )
+        let rect = CGRect(
+            x: (screenSize.width - displaySize.width) / 2,
+            y: (screenSize.height - displaySize.height) / 2,
+            width: displaySize.width,
+            height: displaySize.height
+        )
+        return Target(
+            screen: frozen,
+            rect: rect,
+            image: image,
+            source: .longPreview,
+            title: "长截图 · \(image.width) × \(image.height) px"
+        )
+    }
+
+    private func cancelLongCapture() {
+        switch longCapturePhase {
+        case .capturing:
+            longCaptureTask?.cancel()
+            longCaptureTask = nil
+            closeLongCaptureHUD()
+            restoreOverlays()
+            composer = LongScreenshotComposer()
+            longCapturePhase = .idle
+            if let target, target.source == .region {
+                showToolbar(showsLongCapture: true)
+            }
+            showOverlayNotice("已取消长截图，可重新框选或再次进入长截图。")
+            Log.screenshot.info("Long capture cancelled")
+            refreshViews()
+        case .choosing:
+            cancelLongCaptureChoosing()
+        case .idle, .preview:
+            break
+        }
+    }
+
+    private func stopLongCaptureWithError(_ message: String) {
+        guard longCapturePhase == .capturing else { return }
+        longCaptureTask?.cancel()
+        longCaptureTask = nil
+        closeLongCaptureHUD()
+        restoreOverlays()
+        composer = LongScreenshotComposer()
+        longCapturePhase = .idle
+        if let target, target.source == .region {
+            showToolbar(showsLongCapture: true)
+        }
+        showOverlayNotice(message, isError: true)
+        AppState.shared.flash(message, kind: .error)
+        Log.screenshot.error("Long capture stopped: \(message, privacy: .public)")
+        refreshViews()
+    }
+
+    // MARK: - 覆盖层提示
+
+    private func showOverlayNotice(_ text: String, isError: Bool = false) {
+        noticeText = text
+        noticeIsError = isError
+        noticeTask?.cancel()
+        noticeTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            guard let self, !Task.isCancelled else { return }
+            self.noticeText = nil
+            self.noticeIsError = false
+            self.refreshViews()
+        }
+        refreshViews()
+    }
+
+    private func floatingFrame(size: CGSize, targetRect: CGRect, viewBounds: CGRect) -> CGRect {
+        var originX = targetRect.midX - size.width / 2
+        var originY = targetRect.minY - size.height - 10
+        if originY < 12 {
+            originY = min(targetRect.maxY + 10, viewBounds.height - size.height - 12)
+        }
+        originX = min(max(originX, 12), max(12, viewBounds.width - size.width - 12))
+        originY = min(max(originY, 12), max(12, viewBounds.height - size.height - 12))
+        return CGRect(x: originX, y: originY, width: size.width, height: size.height)
     }
 
     // MARK: - 绘制
@@ -698,6 +1325,7 @@ final class CaptureOverlayController: NSObject {
     func draw(frozenScreen: FrozenScreen, in view: CaptureOverlayView) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
         let bounds = screenBounds(frozenScreen)
+        let cornerRadius = session.clampedCornerRadius
 
         context.saveGState()
         context.interpolationQuality = .high
@@ -721,7 +1349,7 @@ final class CaptureOverlayController: NSObject {
         if let clearRect {
             let path = CGMutablePath()
             path.addRect(bounds)
-            path.addRect(clearRect)
+            path.addPath(RoundedMask.path(for: clearRect, radius: cornerRadius))
             context.addPath(path)
             context.fillPath(using: .evenOdd)
         } else {
@@ -730,25 +1358,34 @@ final class CaptureOverlayController: NSObject {
         context.restoreGState()
 
         if let target,
-           target.source == .window,
+           target.source != .region,
            target.screen.displayID == frozenScreen.displayID,
            let image = target.image,
            target.rect.width > 0, target.rect.height > 0 {
             context.saveGState()
-            context.clip(to: target.rect)
+            context.addPath(RoundedMask.path(for: target.rect, radius: cornerRadius))
+            context.clip()
             context.draw(image, in: target.rect)
             context.restoreGState()
         }
 
         if let target, target.screen.displayID == frozenScreen.displayID {
+            context.saveGState()
+            context.addPath(RoundedMask.path(for: target.rect, radius: cornerRadius))
+            context.clip()
             for annotation in session.annotations {
                 AnnotationDrawing.draw(annotation: annotation, in: context, origin: target.rect.origin)
             }
             if let draft {
                 AnnotationDrawing.draw(annotation: draft, in: context, origin: target.rect.origin)
             }
+            context.restoreGState()
+
+            clearRoundedCorners(rect: target.rect, radius: cornerRadius, context: context)
+
             drawChrome(
                 rect: target.rect,
+                cornerRadius: cornerRadius,
                 context: context,
                 scale: target.screen.scale,
                 showHandles: target.source == .region,
@@ -762,8 +1399,10 @@ final class CaptureOverlayController: NSObject {
            target == nil,
            let selection = activeSelectionRect,
            selection.width > 0.5, selection.height > 0.5 {
+            clearRoundedCorners(rect: selection, radius: cornerRadius, context: context)
             drawChrome(
                 rect: selection,
+                cornerRadius: cornerRadius,
                 context: context,
                 scale: activeScreen.scale,
                 showHandles: false,
@@ -805,10 +1444,29 @@ final class CaptureOverlayController: NSObject {
                 viewBounds: bounds
             )
         }
+
+        if let noticeText,
+           frozenScreen.displayID == (target?.screen.displayID ?? hintDisplayID) {
+            drawNotice(noticeText, isError: noticeIsError, context: context, viewBounds: bounds)
+        }
+    }
+
+    /// 覆盖层预览也把圆角外区域真正“挖空”，让窗口透明处露出桌面，
+    /// 与最终 PNG 的圆角外透明保持一致（而不是只有边框变圆）。
+    private func clearRoundedCorners(rect: CGRect, radius: CGFloat, context: CGContext) {
+        let clamped = RoundedMask.clampedRadius(radius, in: rect)
+        guard clamped > 0 else { return }
+        context.saveGState()
+        context.setBlendMode(.clear)
+        context.addPath(CGPath(rect: rect, transform: nil))
+        context.addPath(RoundedMask.path(for: rect, radius: clamped))
+        context.fillPath(using: .evenOdd)
+        context.restoreGState()
     }
 
     private func drawChrome(
         rect: CGRect,
+        cornerRadius: CGFloat,
         context: CGContext,
         scale: CGFloat,
         showHandles: Bool,
@@ -816,10 +1474,13 @@ final class CaptureOverlayController: NSObject {
         viewBounds: CGRect
     ) {
         let accent = NSColor.controlAccentColor
+        let borderRect = rect.insetBy(dx: 0.75, dy: 0.75)
+        let borderRadius = RoundedMask.clampedRadius(max(0, cornerRadius - 0.75), in: borderRect)
         context.saveGState()
         context.setStrokeColor(accent.cgColor)
         context.setLineWidth(1.5)
-        context.stroke(rect.insetBy(dx: 0.75, dy: 0.75))
+        context.addPath(RoundedMask.path(for: borderRect, radius: borderRadius))
+        context.strokePath()
         context.restoreGState()
 
         if showHandles {
@@ -837,7 +1498,10 @@ final class CaptureOverlayController: NSObject {
 
         let pixelWidth = Int((rect.width * scale).rounded())
         let pixelHeight = Int((rect.height * scale).rounded())
-        let sizeText = "\(Int(rect.width.rounded())) × \(Int(rect.height.rounded())) pt · \(pixelWidth) × \(pixelHeight) px"
+        var sizeText = "\(Int(rect.width.rounded())) × \(Int(rect.height.rounded())) pt · \(pixelWidth) × \(pixelHeight) px"
+        if cornerRadius > 0 {
+            sizeText += " · 圆角 \(Int(cornerRadius.rounded()))pt"
+        }
         let label: String
         if let windowTitle, !windowTitle.isEmpty {
             label = windowTitle
@@ -917,6 +1581,50 @@ final class CaptureOverlayController: NSObject {
         context.restoreGState()
         NSAttributedString(string: text, attributes: attributes)
             .draw(at: CGPoint(x: box.minX + padding.width, y: box.minY + padding.height))
+    }
+
+    private func drawNotice(
+        _ text: String,
+        isError: Bool,
+        context: CGContext,
+        viewBounds: CGRect
+    ) {
+        let font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: NSColor.white,
+        ]
+        let attributed = NSAttributedString(string: text, attributes: attributes)
+        let maxWidth = max(200, min(viewBounds.width - 64, 760))
+        let bounding = attributed.boundingRect(
+            with: CGSize(width: maxWidth, height: CGFloat.greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading]
+        )
+        let padding = CGSize(width: 12, height: 8)
+        let boxSize = CGSize(
+            width: ceil(bounding.width) + padding.width * 2,
+            height: ceil(bounding.height) + padding.height * 2
+        )
+        let box = CGRect(
+            x: viewBounds.midX - boxSize.width / 2,
+            y: viewBounds.maxY - boxSize.height - 52,
+            width: boxSize.width,
+            height: boxSize.height
+        )
+        context.saveGState()
+        context.setFillColor((isError ? NSColor.systemRed : NSColor.black).withAlphaComponent(0.82).cgColor)
+        context.addPath(CGPath(roundedRect: box, cornerWidth: 8, cornerHeight: 8, transform: nil))
+        context.fillPath()
+        context.restoreGState()
+        attributed.draw(
+            with: CGRect(
+                x: box.minX + padding.width,
+                y: box.minY + padding.height,
+                width: bounding.width,
+                height: bounding.height
+            ),
+            options: [.usesLineFragmentOrigin, .usesFontLeading]
+        )
     }
 
     // MARK: - 辅助

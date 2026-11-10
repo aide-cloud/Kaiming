@@ -23,9 +23,19 @@ struct KaimingApp: App {
                 .environmentObject(settings)
                 .environmentObject(appState)
         }
-        .defaultSize(width: 900, height: 700)
+        .defaultSize(width: 1100, height: 720)
         .defaultPosition(.center)
         .windowResizability(.contentMinSize)
+
+        // 剪贴板快捷选择（⌥⇧C）：独立小窗口，支持键盘上下选择 + Enter 复制。
+        Window("剪贴板 — Kaiming", id: "clipboard-picker") {
+            ClipboardPickerView()
+                .environmentObject(settings)
+                .environmentObject(appState)
+        }
+        .defaultSize(width: 520, height: 460)
+        .defaultPosition(.center)
+        .windowResizability(.contentSize)
 
         // macOS 14 + LSUIElement 下 SwiftUI `Settings` scene 无法可靠唤起
         // （实测 showSettingsWindow: 返回 handled 但不创建窗口），因此使用独立 Window scene。

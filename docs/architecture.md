@@ -115,3 +115,41 @@ start(mode:.region)
 四个模块共享 `Shared/PasteboardQueue.swift` 的**全局唯一串行队列**，
 所有 `NSPasteboard` 读写都在该队列执行（截图写回用 `sync` 等待完成，其余用 `async`），
 避免跨模块并发访问。剪贴板监控的状态也由该队列串行保护。
+
+## 10. v1.1 新增能力
+
+### 剪贴板快捷选择
+
+`⌥⇧C` → `HotKeyManager` → `AppRouter.openClipboardPicker()` → `Window(id: "clipboard-picker")`。
+窗口内搜索框聚焦，↑/↓ 选择、Return 复制并关闭、Esc 关闭；关闭后在无其他可见窗口时
+`NSApp.hide(nil)` 把焦点交还前一个应用，便于直接 ⌘V。
+
+### 应用中心与 CLI
+
+- 菜单栏第 4 个 tab「应用」由 `AppCenter` 模块实现：扫描 `/Applications`、`/System/Applications`、
+  `~/Applications`（二级以内），展示图标网格并可启动；「打开目录…」与最近目录调用
+  `MarkdownOpenRequest` + `AppRouter.openMarkdown()`。
+- CLI `kaiming ./docs` 把绝对路径做 base64url 编码后打开 `kaiming://open-folder?path=...`；
+  `AppDelegate.application(_:open:)` 解码并设置 `MarkdownOpenRequest`，再打开 Markdown 窗口。
+  URL scheme 在 `Config/Info.plist` 注册。
+
+### Markdown 目录树
+
+- `MarkdownFolderTree`（App 级 shared）只展示目录与 `.md/.markdown`，文件夹优先、懒加载；
+  `MarkdownSidebarView` 260pt，支持展开/折叠、刷新、当前文件高亮。
+- 外部请求与手动打开共用同一加载路径；脏文档载入文件前确认，仅切换目录不影响当前文档。
+
+### 视频动态壁纸
+
+macOS 没有公开 API 把视频设为系统壁纸。实现为每屏一个桌面层窗口：
+
+```
+level = CGWindowLevelForKey(.desktopWindow) + 1   // -2147483622
+collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+ignoresMouseEvents = true, hasShadow = false
+AVQueuePlayer + AVPlayerLooper（静音循环）+ AVPlayerLayer(resizeAspectFill)
+```
+
+状态持久化为 `Application Support/Kaiming/Wallpapers/dynamic-wallpaper.json`（视频路径 + 屏幕集合），
+App 启动时由 `WallpaperManager.init` 延迟恢复；静态壁纸应用到某屏时停止该屏动态壁纸。
+限制：App 必须运行；登录/锁屏不显示；全屏应用会覆盖；逐屏解码有性能成本。

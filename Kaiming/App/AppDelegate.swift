@@ -26,6 +26,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 剪贴板模块自己负责串行队列与轮询，这里只启动。
         ClipboardManager.shared.startMonitoring()
 
+        // 触发壁纸模块初始化：若上次启用了动态壁纸，由它在 init 中恢复播放。
+        _ = WallpaperManager.shared
+
         Log.app.info("Kaiming launched, screenRecording=\(AppState.shared.screenRecordingGranted, privacy: .public)")
 
         #if DEBUG
@@ -36,6 +39,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if ProcessInfo.processInfo.arguments.contains("--open-settings") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
                 AppRouter.shared.openSettings()
+            }
+        }
+        if ProcessInfo.processInfo.arguments.contains("--open-clipboard") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                AppRouter.shared.openClipboardPicker()
+            }
+        }
+        if let index = ProcessInfo.processInfo.arguments.firstIndex(of: "--capture-test"),
+           index + 1 < ProcessInfo.processInfo.arguments.count {
+            let modeName = ProcessInfo.processInfo.arguments[index + 1]
+            let mode: CaptureMode = switch modeName {
+            case "window": .window
+            case "region": .region
+            default: .fullScreen
+            }
+            // 测试实例不污染用户剪贴板/声音；截图历史写入当前 CFFIXED_USER_HOME。
+            SettingsStore.shared.copyScreenshotToClipboard = false
+            SettingsStore.shared.playCaptureSound = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                ScreenshotCoordinator.shared.start(mode: mode)
+            }
+        }
+        if let index = ProcessInfo.processInfo.arguments.firstIndex(of: "--open-folder"),
+           index + 1 < ProcessInfo.processInfo.arguments.count {
+            let path = ProcessInfo.processInfo.arguments[index + 1]
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                MarkdownOpenRequest.shared.open(folder: URL(fileURLWithPath: path))
+                AppRouter.shared.openMarkdown()
             }
         }
         handleSnapshotArguments()
@@ -58,6 +89,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 switch args[tabIndex + 1] {
                 case "clipboard": AppState.shared.selectedTab = .clipboard
                 case "wallpaper": AppState.shared.selectedTab = .wallpaper
+                case "apps": AppState.shared.selectedTab = .apps
                 default: AppState.shared.selectedTab = .screenshot
                 }
             }
@@ -67,6 +99,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     .environmentObject(SettingsStore.shared)
             )
             snapshotViaWindow(root: root, size: CGSize(width: 400, height: 580), path: path)
+            return
+        }
+
+        if let index = args.firstIndex(of: "--snapshot-clipboard-picker"), index + 1 < args.count {
+            let path = args[index + 1]
+            let root = AnyView(
+                ClipboardPickerView()
+                    .environmentObject(SettingsStore.shared)
+                    .environmentObject(AppState.shared)
+            )
+            snapshotViaWindow(root: root, size: CGSize(width: 520, height: 460), path: path)
             return
         }
 
@@ -147,6 +190,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidBecomeActive(_ notification: Notification) {
         // 用户可能刚从系统设置授权返回，实时刷新权限状态。
         AppState.shared.refreshPermission()
+    }
+
+    /// 处理 `kaiming://open-folder?path=<base64url>`（CLI `kaiming ./docs` 使用）。
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            handleExternalOpen(url)
+        }
+    }
+
+    private func handleExternalOpen(_ url: URL) {
+        guard url.scheme == "kaiming" else { return }
+        guard
+            let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+            let encoded = components.queryItems?.first(where: { $0.name == "path" })?.value,
+            let decoded = Self.decodeBase64URL(encoded)
+        else {
+            AppState.shared.flash("目录快捷方式无效，请重新复制路径。", kind: .error)
+            return
+        }
+
+        let target = URL(fileURLWithPath: decoded).standardizedFileURL
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: target.path, isDirectory: &isDirectory) else {
+            AppState.shared.flash("路径不存在：\(target.path)", kind: .error)
+            return
+        }
+
+        let folder = isDirectory.boolValue ? target : target.deletingLastPathComponent()
+        let file = isDirectory.boolValue ? nil : target
+        #if DEBUG
+        NSLog("Kaiming debug: external open folder=\(folder.path) file=\(file?.path ?? "-")")
+        #endif
+        MarkdownOpenRequest.shared.open(folder: folder, file: file)
+
+        // MenuBarLabel 的 task 通常已注册 handler；若 URL 在冷启动时到达，稍等再打开。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+            AppRouter.shared.openMarkdown()
+        }
+    }
+
+    private static func decodeBase64URL(_ value: String) -> String? {
+        var base64 = value.replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        let remainder = base64.count % 4
+        if remainder > 0 {
+            base64 += String(repeating: "=", count: 4 - remainder)
+        }
+        guard let data = Data(base64Encoded: base64) else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

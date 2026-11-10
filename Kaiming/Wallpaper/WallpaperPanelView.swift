@@ -2,6 +2,21 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// 壁纸数据源的媒体类型。
+private enum WallpaperMediaKind: String, CaseIterable, Identifiable {
+    case image
+    case video
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .image: "图片"
+        case .video: "视频"
+        }
+    }
+}
+
 /// 菜单栏面板中的「壁纸」页。
 ///
 /// 布局适配 372pt 内容宽（菜单栏面板 400pt 减去左右各 14pt），所有数据源操作都作用于
@@ -11,7 +26,9 @@ struct WallpaperPanelView: View {
 
     @State private var selectedScreenIDs: Set<String> = []
     @State private var previewCapture: WallpaperRecentCapture?
+    @State private var mediaKind: WallpaperMediaKind = .image
     @State private var isChoosingImage = false
+    @State private var isChoosingVideo = false
     @State private var isChoosingRotationFolder = false
     @State private var rotationFolder: URL?
     @State private var rotationMinutes = 5
@@ -39,6 +56,9 @@ struct WallpaperPanelView: View {
         .onAppear {
             manager.refreshScreens()
             manager.loadRecentCaptures()
+            if manager.isDynamicWallpaperActive {
+                mediaKind = .video
+            }
             if selectedScreenIDs.isEmpty {
                 selectedScreenIDs = Set(manager.screens.map(\.id))
             }
@@ -49,6 +69,11 @@ struct WallpaperPanelView: View {
                 selectedScreenIDs = available
             } else {
                 selectedScreenIDs.formIntersection(available)
+            }
+        }
+        .onChange(of: manager.isDynamicWallpaperActive) {
+            if manager.isDynamicWallpaperActive {
+                mediaKind = .video
             }
         }
     }
@@ -146,13 +171,22 @@ struct WallpaperPanelView: View {
                             .background(Capsule().fill(Color.accentColor.opacity(0.15)))
                             .foregroundStyle(Color.accentColor)
                     }
+
+                    if manager.dynamicWallpaperScreens.contains(screen.id) {
+                        Text("动态")
+                            .font(.system(size: 9, weight: .semibold))
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(Capsule().fill(Color.purple.opacity(0.15)))
+                            .foregroundStyle(Color.purple)
+                    }
                 }
 
                 Text(pixelSizeText(screen.pixelSize))
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
 
-                Text(screen.currentWallpaper?.lastPathComponent ?? "系统默认或动态壁纸")
+                Text(screenSubtitle(for: screen))
                     .font(.system(size: 9))
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
@@ -186,6 +220,14 @@ struct WallpaperPanelView: View {
         "\(Int(size.width.rounded())) × \(Int(size.height.rounded()))"
     }
 
+    private func screenSubtitle(for screen: ScreenInfo) -> String {
+        if manager.dynamicWallpaperScreens.contains(screen.id),
+           let info = manager.dynamicWallpaperInfo {
+            return "动态壁纸 · \(info.url.lastPathComponent)"
+        }
+        return screen.currentWallpaper?.lastPathComponent ?? "系统默认或动态壁纸"
+    }
+
     private var emptyScreensCard: some View {
         VStack(alignment: .leading, spacing: 6) {
             Label("未检测到可用显示器", systemImage: "display")
@@ -209,8 +251,35 @@ struct WallpaperPanelView: View {
 
     private var dataSourceCard: some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionTitle("数据源")
+            HStack(spacing: 8) {
+                sectionTitle("数据源")
 
+                Spacer(minLength: 0)
+
+                Picker("媒体类型", selection: $mediaKind) {
+                    ForEach(WallpaperMediaKind.allCases) { kind in
+                        Text(kind.title).tag(kind)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 116)
+                .disabled(manager.isBusy)
+            }
+
+            if mediaKind == .image {
+                imageSourceControls
+            } else {
+                videoSourceControls
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(cardBackground)
+    }
+
+    private var imageSourceControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Button {
                     manager.setFromPasteboard(screenIDs: selectedScreenIDs)
@@ -244,9 +313,91 @@ struct WallpaperPanelView: View {
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(cardBackground)
+    }
+
+    private var videoSourceControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Button {
+                    isChoosingVideo = true
+                } label: {
+                    Label("选择视频…", systemImage: "film.badge.plus")
+                        .font(.system(size: 11))
+                }
+                .disabled(manager.isBusy || selectedScreenIDs.isEmpty)
+                .fileImporter(
+                    isPresented: $isChoosingVideo,
+                    allowedContentTypes: [.movie, .video],
+                    allowsMultipleSelection: false
+                ) { result in
+                    handleVideoSelection(result)
+                }
+
+                if manager.isDynamicWallpaperActive {
+                    Text("已启用")
+                        .font(.system(size: 9, weight: .semibold))
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(Capsule().fill(Color.purple.opacity(0.15)))
+                        .foregroundStyle(Color.purple)
+                }
+
+                Spacer(minLength: 0)
+            }
+            .controlSize(.small)
+
+            Text("支持 MP4 / MOV，循环静音播放（新视频会替换当前动态壁纸）。macOS 没有系统级视频壁纸 API，动态壁纸由桌面层窗口模拟，仅在 Kaiming 运行期间显示。")
+                .font(.system(size: 9))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let info = manager.dynamicWallpaperInfo, manager.isDynamicWallpaperActive {
+                dynamicVideoCard(info)
+            }
+        }
+    }
+
+    private func dynamicVideoCard(_ info: WallpaperVideoInfo) -> some View {
+        HStack(alignment: .center, spacing: 8) {
+            WallpaperDataThumbnail(data: info.thumbnailData, symbol: "film")
+                .frame(width: 96, height: 54)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(info.url.lastPathComponent)
+                    .font(.system(size: 10, weight: .medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                Text(
+                    "\(durationText(info.duration)) · \(info.pixelWidth)×\(info.pixelHeight) · \(manager.dynamicWallpaperScreens.count) 块屏幕"
+                )
+                .font(.system(size: 9))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+
+                Text("动态壁纸进行中")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.green)
+            }
+
+            Spacer(minLength: 0)
+
+            Button("停止") {
+                manager.stopDynamicWallpaper()
+            }
+            .controlSize(.small)
+            .disabled(manager.isBusy)
+        }
+        .padding(8)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.secondary.opacity(0.08))
+        )
+    }
+
+    private func durationText(_ duration: TimeInterval) -> String {
+        let totalSeconds = max(0, Int(duration.rounded()))
+        return String(format: "%d:%02d", totalSeconds / 60, totalSeconds % 60)
     }
 
     private func handleImageSelection(_ result: Result<[URL], Error>) {
@@ -256,6 +407,16 @@ struct WallpaperPanelView: View {
             manager.setWallpaper(fileURL: url, screenIDs: selectedScreenIDs)
         case .failure(let error):
             AppState.shared.flash("选择图片失败：\(error.localizedDescription)", kind: .error)
+        }
+    }
+
+    private func handleVideoSelection(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            manager.startDynamicWallpaper(fileURL: url, screenIDs: selectedScreenIDs)
+        case .failure(let error):
+            AppState.shared.flash("选择视频失败：\(error.localizedDescription)", kind: .error)
         }
     }
 

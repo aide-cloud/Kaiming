@@ -195,6 +195,33 @@ private struct ScreenshotSettingsPane: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            Section("长截图（自动滚动）") {
+                HStack {
+                    Label(
+                        AccessibilityPermission.isTrusted ? "辅助功能已授权" : "辅助功能未授权",
+                        systemImage: AccessibilityPermission.isTrusted
+                            ? "checkmark.seal.fill"
+                            : "exclamationmark.triangle.fill"
+                    )
+                    .foregroundStyle(AccessibilityPermission.isTrusted ? .green : .orange)
+
+                    Spacer()
+
+                    if !AccessibilityPermission.isTrusted {
+                        Button("请求权限") {
+                            AccessibilityPermission.prompt()
+                        }
+                        Button("打开系统设置") {
+                            AccessibilityPermission.openSystemSettings()
+                        }
+                    }
+                }
+
+                Text("普通截图不需要该权限；长截图的自动滚动需要辅助功能权限。未授权时可在长截图界面改用手动滚动拼接。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .fileImporter(

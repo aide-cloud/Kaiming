@@ -103,6 +103,25 @@ enum ScreenCaptureService {
 
     // MARK: - 准备阶段
 
+    private static func loadShareableContent() async throws -> SCShareableContent {
+        do {
+            return try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        } catch {
+            Log.screenshot.error("SCShareableContent failed: \(error.localizedDescription, privacy: .public)")
+            throw ScreenshotError.permissionDenied
+        }
+    }
+
+    private static func ownApplications(in content: SCShareableContent) -> [SCRunningApplication] {
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        let ownBundleID = Bundle.main.bundleIdentifier
+        return content.applications.filter { application in
+            if application.processID == ownPID { return true }
+            if let ownBundleID, application.bundleIdentifier == ownBundleID { return true }
+            return false
+        }
+    }
+
     /// 一次性获取屏幕内容、冻结所有目标显示器，并（窗口模式时）列出候选窗口。
     ///
     /// - Parameter displayIDs: 需要冻结的显示器；传空数组表示全部。
@@ -111,13 +130,7 @@ enum ScreenCaptureService {
         includeWindows: Bool,
         showsCursor: Bool
     ) async throws -> PreparedContent {
-        let content: SCShareableContent
-        do {
-            content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-        } catch {
-            Log.screenshot.error("SCShareableContent failed: \(error.localizedDescription, privacy: .public)")
-            throw ScreenshotError.permissionDenied
-        }
+        let content = try await loadShareableContent()
 
         guard !content.displays.isEmpty else {
             Log.screenshot.error("SCShareableContent returned no displays")
@@ -126,11 +139,7 @@ enum ScreenCaptureService {
 
         let ownPID = ProcessInfo.processInfo.processIdentifier
         let ownBundleID = Bundle.main.bundleIdentifier
-        let excludedApplications = content.applications.filter { application in
-            if application.processID == ownPID { return true }
-            if let ownBundleID, application.bundleIdentifier == ownBundleID { return true }
-            return false
-        }
+        let excludedApplications = ownApplications(in: content)
 
         var captures: [DisplayCapture] = []
         for display in content.displays {
@@ -185,6 +194,69 @@ enum ScreenCaptureService {
         return PreparedContent(displays: captures, windows: windowDescriptors)
     }
 
+    // MARK: - 长截图逐帧采集
+
+    /// 重新截取当前屏幕上的指定选区（不使用冻结图）。
+    ///
+    /// 先捕获整块显示器（排除本应用窗口），再按该屏实际像素比例裁剪；
+    /// 长截图的覆盖层在采集期间会 orderOut，因此拿到的是页面当前的真实内容。
+    static func captureRegion(
+        displayID: CGDirectDisplayID,
+        selectionInScreen: CGRect,
+        screenPointSize: CGSize,
+        showsCursor: Bool
+    ) async throws -> CGImage {
+        let content = try await loadShareableContent()
+        guard !content.displays.isEmpty else {
+            throw ScreenshotError.noContent
+        }
+        guard let display = content.displays.first(where: { $0.displayID == displayID }) else {
+            throw ScreenshotError.noDisplay
+        }
+
+        let filter = SCContentFilter(
+            display: display,
+            excludingApplications: ownApplications(in: content),
+            exceptingWindows: []
+        )
+        let configuration = SCStreamConfiguration()
+        configuration.width = display.width
+        configuration.height = display.height
+        configuration.showsCursor = showsCursor
+        configuration.capturesAudio = false
+        configuration.scalesToFit = false
+
+        let image: CGImage
+        do {
+            image = try await SCScreenshotManager.captureImage(
+                contentFilter: filter,
+                configuration: configuration
+            )
+        } catch {
+            Log.screenshot.error(
+                "Long capture frame failed on display \(displayID, privacy: .public): \(error.localizedDescription, privacy: .public)"
+            )
+            throw ScreenshotError.displayCaptureFailed(
+                displayID: displayID,
+                message: error.localizedDescription
+            )
+        }
+
+        let cropRect = ScreenGeometry.pixelCropRect(
+            selection: selectionInScreen,
+            screenBounds: CGRect(origin: .zero, size: screenPointSize),
+            imageSize: CGSize(width: image.width, height: image.height)
+        )
+        guard cropRect.width >= 1, cropRect.height >= 1,
+              let cropped = image.cropping(to: cropRect) else {
+            throw ScreenshotError.displayCaptureFailed(
+                displayID: displayID,
+                message: "所选区域超出了屏幕可截取范围"
+            )
+        }
+        return cropped
+    }
+
     // MARK: - 窗口截图
 
     /// 用 `SCContentFilter(desktopIndependentWindow:)` 单独截取一个窗口。
@@ -193,13 +265,7 @@ enum ScreenCaptureService {
         backingScale: CGFloat,
         showsCursor: Bool
     ) async throws -> CGImage {
-        let content: SCShareableContent
-        do {
-            content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-        } catch {
-            Log.screenshot.error("Window capture content fetch failed: \(error.localizedDescription, privacy: .public)")
-            throw ScreenshotError.permissionDenied
-        }
+        let content = try await loadShareableContent()
 
         guard let window = content.windows.first(where: { $0.windowID == windowID }) else {
             throw ScreenshotError.windowUnavailable

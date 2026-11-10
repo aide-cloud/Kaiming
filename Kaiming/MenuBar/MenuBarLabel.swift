@@ -39,5 +39,9 @@ struct MenuBarLabel: View {
             openWindow(id: "settings")
             NSApp.activate(ignoringOtherApps: true)
         }
+        AppRouter.shared.registerClipboardPicker {
+            openWindow(id: "clipboard-picker")
+            NSApp.activate(ignoringOtherApps: true)
+        }
     }
 }

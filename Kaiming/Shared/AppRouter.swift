@@ -8,6 +8,7 @@ final class AppRouter {
     private var captureHandler: ((CaptureMode) -> Void)?
     private var markdownHandler: (() -> Void)?
     private var settingsHandler: (() -> Void)?
+    private var clipboardPickerHandler: (() -> Void)?
 
     private init() {}
 
@@ -21,6 +22,18 @@ final class AppRouter {
     /// 设置窗口使用独立 Window scene；macOS 14 + LSUIElement 下 Settings scene 无法可靠唤起。
     func registerSettings(_ handler: @escaping () -> Void) {
         settingsHandler = handler
+    }
+
+    func registerClipboardPicker(_ handler: @escaping () -> Void) {
+        clipboardPickerHandler = handler
+    }
+
+    func openClipboardPicker() {
+        guard let clipboardPickerHandler else {
+            Log.app.error("Clipboard picker handler not registered yet; ignoring")
+            return
+        }
+        clipboardPickerHandler()
     }
 
     func openSettings() {

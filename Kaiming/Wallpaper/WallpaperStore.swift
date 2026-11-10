@@ -386,7 +386,7 @@ enum WallpaperFileStore {
         return pngData(from: image)
     }
 
-    private static func pngData(from image: CGImage) -> Data? {
+    static func pngData(from image: CGImage) -> Data? {
         guard let output = CFDataCreateMutable(kCFAllocatorDefault, 0),
               let destination = CGImageDestinationCreateWithData(
                   output,
