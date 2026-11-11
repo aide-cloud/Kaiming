@@ -325,7 +325,7 @@ struct WallpaperPanelView: View {
             }
             .controlSize(.small)
 
-            Text("支持 MP4 / MOV，循环静音播放（新视频会替换当前动态壁纸）。macOS 没有系统级视频壁纸 API，动态壁纸由桌面层窗口模拟，仅在 Kaiming 运行期间显示。")
+            Text("支持 MP4 / MOV，循环静音播放（新视频会替换当前动态壁纸）。macOS 菜单栏只能取系统壁纸，启用时会把视频首帧 poster 设为系统壁纸以匹配菜单栏背景；停止或切换静态壁纸时恢复原壁纸。")
                 .font(.system(size: 9))
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)

@@ -56,6 +56,7 @@ struct MarkdownSidebarView: View {
         }
         .padding(.horizontal, 10)
         .frame(height: 36)
+        .zIndex(20)
     }
 
     private func headerButton(
@@ -70,7 +71,7 @@ struct MarkdownSidebarView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)
-        .help(help)
+        .markdownTooltip(help, alignment: .bottomTrailing)
         .accessibilityLabel(help)
     }
 
@@ -114,21 +115,40 @@ struct MarkdownSidebarView: View {
     }
 
     private var treeScroll: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 1) {
-                ForEach(visibleRootChildren) { node in
-                    MarkdownTreeRow(
-                        node: node,
-                        depth: 0,
-                        tree: tree,
-                        showsAllFiles: showsAllFiles,
-                        currentFileURL: currentFileURL,
-                        onSelectFile: onSelectFile
-                    )
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 1) {
+                    ForEach(visibleRootChildren) { node in
+                        MarkdownTreeRow(
+                            node: node,
+                            depth: 0,
+                            tree: tree,
+                            showsAllFiles: showsAllFiles,
+                            currentFileURL: currentFileURL,
+                            onSelectFile: onSelectFile
+                        )
+                    }
                 }
+                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(.vertical, 6)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .onChange(of: currentFileURL) { _, _ in
+                scrollToCurrentFile(proxy: proxy)
+            }
+            .onChange(of: tree.expandedDirectories) { _, _ in
+                scrollToCurrentFile(proxy: proxy)
+            }
+        }
+    }
+
+    private func scrollToCurrentFile(proxy: ScrollViewProxy) {
+        guard let currentFileURL else { return }
+        let target = currentFileURL.standardizedFileURL
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            withAnimation(.easeInOut(duration: 0.15)) {
+                proxy.scrollTo(target, anchor: .center)
+            }
         }
     }
 
@@ -259,7 +279,7 @@ struct MarkdownSidebarView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.borderless)
-            .help("忽略提示")
+            .markdownTooltip("忽略提示", alignment: .bottomTrailing)
         }
         .padding(8)
         .background(

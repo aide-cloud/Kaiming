@@ -10,6 +10,7 @@ enum WallpaperVideoError: LocalizedError {
     case noVideoTrack
     case invalidDuration
     case copyFailed(String)
+    case posterFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -23,6 +24,8 @@ enum WallpaperVideoError: LocalizedError {
             "视频时长无效"
         case .copyFailed(let reason):
             "复制视频失败：\(reason)"
+        case .posterFailed(let reason):
+            "生成菜单栏海报失败：\(reason)"
         }
     }
 }
@@ -36,10 +39,26 @@ struct WallpaperVideoInfo: Equatable, Sendable {
     let thumbnailData: Data?
 }
 
-/// 动态壁纸的持久化状态：视频绝对路径 + 启用的屏幕 id。
+/// 动态壁纸的持久化状态：视频绝对路径、启用的屏幕 id、菜单栏 poster 与原壁纸。
 struct WallpaperDynamicState: Codable, Sendable {
     let videoPath: String
     let screenIDs: [String]
+    /// 菜单栏背景使用的首帧 poster（AppPaths.wallpapers 下的持久 PNG）。
+    var posterPath: String?
+    /// screenID → 启用动态壁纸前的系统壁纸路径；停止时用于恢复。
+    var originalWallpapers: [String: String]?
+
+    init(
+        videoPath: String,
+        screenIDs: [String],
+        posterPath: String? = nil,
+        originalWallpapers: [String: String]? = nil
+    ) {
+        self.videoPath = videoPath
+        self.screenIDs = screenIDs
+        self.posterPath = posterPath
+        self.originalWallpapers = originalWallpapers
+    }
 }
 
 /// 动态壁纸的视频仓库：校验、持久化复制、首帧缩略图与跨启动状态文件。
@@ -141,6 +160,65 @@ enum WallpaperVideoStore {
             }
             return destination
         }
+    }
+
+    // MARK: - 菜单栏 poster
+
+    /// 视频首帧 poster 的持久路径：`<视频 UUID>-poster.png`（与视频同目录）。
+    static func posterURL(for videoURL: URL) -> URL {
+        let directory = AppPaths.wallpapers
+        let stem = videoURL.deletingPathExtension().lastPathComponent
+        return directory.appendingPathComponent("\(stem)-poster.png", isDirectory: false)
+    }
+
+    /// 复用已有 poster；缺失时从视频首帧生成并持久化到 `AppPaths.wallpapers`。
+    /// 系统菜单栏的毛玻璃背景只取系统桌面壁纸，无法显示桌面层窗口，因此用首帧 poster 匹配。
+    static func ensurePoster(for videoURL: URL) async throws -> URL {
+        let destination = posterURL(for: videoURL)
+
+        let existing = try await WallpaperFileStore.perform { () -> Bool in
+            guard FileManager.default.fileExists(atPath: destination.path) else { return false }
+            let size = (try? destination.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            return FileManager.default.isReadableFile(atPath: destination.path) && size > 0
+        }
+        if existing {
+            return destination
+        }
+
+        let asset = AVURLAsset(url: videoURL)
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: 3840, height: 3840)
+        let candidates: [CMTime] = [.zero, CMTime(seconds: 0.1, preferredTimescale: 600)]
+
+        var posterData: Data?
+        for time in candidates {
+            if let result = try? await generator.image(at: time),
+               let data = WallpaperFileStore.pngData(from: result.image) {
+                posterData = data
+                break
+            }
+        }
+        guard let posterData else {
+            throw WallpaperVideoError.posterFailed(videoURL.lastPathComponent)
+        }
+
+        let directory = try AppPaths.ensureDirectory(AppPaths.wallpapers)
+        let finalURL = directory.appendingPathComponent(destination.lastPathComponent, isDirectory: false)
+        try await WallpaperFileStore.perform {
+            do {
+                try posterData.write(to: finalURL, options: .atomic)
+            } catch {
+                throw WallpaperVideoError.posterFailed(error.localizedDescription)
+            }
+            let size = (try? finalURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            guard FileManager.default.isReadableFile(atPath: finalURL.path), size > 0 else {
+                try? FileManager.default.removeItem(at: finalURL)
+                throw WallpaperVideoError.posterFailed("海报文件不可读")
+            }
+        }
+        Log.wallpaper.info("Dynamic wallpaper poster saved: \(finalURL.lastPathComponent, privacy: .public)")
+        return finalURL
     }
 
     // MARK: - 跨启动状态

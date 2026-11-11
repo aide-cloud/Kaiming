@@ -29,10 +29,11 @@ final class WallpaperManager: ObservableObject {
     @Published private(set) var rotationFolder: URL?
     @Published private(set) var rotationInterval: TimeInterval = 300
 
-    /// 动态（视频）壁纸状态：是否启用、启用的屏幕、当前视频信息。
+    /// 动态（视频）壁纸状态：是否启用、启用的屏幕、当前视频信息、菜单栏 poster。
     @Published private(set) var isDynamicWallpaperActive = false
     @Published private(set) var dynamicWallpaperScreens: Set<String> = []
     @Published private(set) var dynamicWallpaperInfo: WallpaperVideoInfo?
+    @Published private(set) var dynamicPosterURL: URL?
 
     private let dynamicController = DynamicWallpaperController()
     private var screenObserver: NSObjectProtocol?
@@ -41,6 +42,8 @@ final class WallpaperManager: ObservableObject {
     private var rotationScreenIDs: Set<String> = []
     private var rotationTick = 0
     private var thumbnailCache: [String: Data] = [:]
+    /// screenID → 启用动态壁纸前的系统壁纸；停止时恢复（多屏各自）。
+    private var originalWallpapers: [String: URL] = [:]
     /// 串行化动态壁纸状态文件的写入，避免快速「停止 / 开始」时 JSON 写入乱序。
     private var dynamicStateWriteTask: Task<Void, Never>?
 
@@ -113,7 +116,16 @@ final class WallpaperManager: ObservableObject {
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
+                let screens = self.dynamicWallpaperScreens
                 self.dynamicController.stopAll()
+                // 退出 App 时恢复系统壁纸，避免菜单栏/桌面停留在 poster；持久化状态保留，
+                // 下次启动仍会恢复动态壁纸（原壁纸路径也在状态文件里）。
+                if !screens.isEmpty {
+                    let failures = self.restoreOriginalWallpapers(for: screens, removeFromMap: false)
+                    if !failures.isEmpty {
+                        Log.wallpaper.error("Restore original wallpapers on termination failed: \(failures.joined(separator: "; "), privacy: .public)")
+                    }
+                }
                 Log.wallpaper.info("Dynamic wallpaper stopped for app termination")
             }
         }
@@ -256,7 +268,13 @@ final class WallpaperManager: ObservableObject {
                     pixelHeight: sourceInfo.pixelHeight,
                     thumbnailData: sourceInfo.thumbnailData
                 )
-                self.installDynamicWallpaper(info: storedInfo, screenIDs: targets)
+                // 菜单栏毛玻璃只取系统壁纸，桌面层窗口不会出现在菜单栏背景里；
+                // 用视频首帧 poster 作为系统壁纸，使菜单栏/系统半透明区域与视频匹配。
+                let posterURL = try? await WallpaperVideoStore.ensurePoster(for: storedURL)
+                if posterURL == nil {
+                    Log.wallpaper.error("Menu bar poster generation failed for \(storedURL.lastPathComponent, privacy: .public)")
+                }
+                self.installDynamicWallpaper(info: storedInfo, posterURL: posterURL, screenIDs: targets)
             } catch {
                 self.isBusy = false
                 let message = error.localizedDescription
@@ -266,29 +284,62 @@ final class WallpaperManager: ObservableObject {
         }
     }
 
-    /// 停止所有屏幕的动态壁纸，并清除跨启动恢复状态。
+    /// 停止所有屏幕的动态壁纸：关闭桌面层窗口、恢复原系统壁纸，并清除跨启动状态。
     func stopDynamicWallpaper() {
         let wasActive = isDynamicWallpaperActive
+        let screens = dynamicWallpaperScreens
         dynamicController.stopAll()
+        let restoreFailures = restoreOriginalWallpapers(for: screens, removeFromMap: true)
         dynamicWallpaperScreens = []
         dynamicWallpaperInfo = nil
+        dynamicPosterURL = nil
         isDynamicWallpaperActive = false
         clearDynamicPersistence()
+        refreshScreens()
         if wasActive {
-            Log.wallpaper.info("Dynamic wallpaper stopped by user")
-            AppState.shared.flash("已停止动态壁纸", kind: .success)
+            if restoreFailures.isEmpty {
+                Log.wallpaper.info("Dynamic wallpaper stopped; original wallpapers restored")
+                AppState.shared.flash("已停止动态壁纸", kind: .success)
+            } else {
+                Log.wallpaper.error(
+                    "Dynamic wallpaper stopped; restore failures: \(restoreFailures.joined(separator: "; "), privacy: .public)"
+                )
+                AppState.shared.flash(
+                    "已停止动态壁纸，但部分屏幕原壁纸恢复失败：\(restoreFailures.joined(separator: "；"))",
+                    kind: .error
+                )
+            }
         }
     }
 
-    /// 只停止指定屏幕的动态壁纸（例如这些屏幕改为静态壁纸时）。
+    /// 只停止指定屏幕的动态壁纸，并恢复这些屏幕的原壁纸。
     func stopDynamicWallpaper(screenIDs: Set<String>) {
-        detachDynamicWallpaper(screenIDs: screenIDs)
+        detachDynamicWallpaper(screenIDs: screenIDs, restoreOriginals: true)
     }
 
-    private func installDynamicWallpaper(info: WallpaperVideoInfo, screenIDs: Set<String>) {
+    private func installDynamicWallpaper(
+        info: WallpaperVideoInfo,
+        posterURL: URL?,
+        screenIDs: Set<String>
+    ) {
         let screenMap = Self.makeScreenMap()
-        // 当前实现为「单个视频跨多屏」：新视频替换已有动态壁纸，避免持久化状态出现多个视频的二义性。
+        let previousScreens = dynamicWallpaperScreens
+
+        // 替换视频时，不再作为目标的屏幕先恢复原壁纸；目标屏幕已有原壁纸记录则保留，
+        // 避免把上一次的 poster 当成原壁纸。
+        let removedScreens = previousScreens.subtracting(screenIDs)
+        if !removedScreens.isEmpty {
+            let restoreFailures = restoreOriginalWallpapers(for: removedScreens, removeFromMap: true)
+            if !restoreFailures.isEmpty {
+                Log.wallpaper.error(
+                    "Restore removed screens failed: \(restoreFailures.joined(separator: "; "), privacy: .public)"
+                )
+            }
+        }
+
         dynamicController.stopAll()
+        captureOriginalWallpapers(for: screenIDs)
+        let posterFailures = applyPoster(posterURL, to: screenIDs)
         let started = dynamicController.start(
             videoURL: info.url,
             screenIDs: screenIDs,
@@ -297,49 +348,98 @@ final class WallpaperManager: ObservableObject {
         isBusy = false
 
         guard !started.isEmpty else {
-            AppState.shared.flash("动态壁纸启动失败：没有可用屏幕", kind: .error)
+            let restoreFailures = restoreOriginalWallpapers(for: screenIDs, removeFromMap: true)
+            if !restoreFailures.isEmpty {
+                Log.wallpaper.error(
+                    "Restore after failed dynamic start: \(restoreFailures.joined(separator: "; "), privacy: .public)"
+                )
+            }
+            dynamicPosterURL = nil
             clearDynamicPersistence()
+            AppState.shared.flash("动态壁纸启动失败：没有可用屏幕", kind: .error)
             return
         }
 
         dynamicWallpaperInfo = info
         dynamicWallpaperScreens = started
+        dynamicPosterURL = posterURL
         isDynamicWallpaperActive = true
+        // 只保留实际启动成功屏幕的原壁纸记录。
+        originalWallpapers = originalWallpapers.filter { started.contains($0.key) }
         persistDynamicWallpaperState()
         refreshScreens()
-        AppState.shared.flash("已启用动态壁纸", kind: .success)
+
+        if posterURL == nil {
+            AppState.shared.flash("已启用动态壁纸，但菜单栏 poster 生成失败，菜单栏背景可能不匹配", kind: .error)
+        } else if !posterFailures.isEmpty {
+            AppState.shared.flash(
+                "已启用动态壁纸，但部分屏幕菜单栏背景设置失败：\(posterFailures.joined(separator: "；"))",
+                kind: .error
+            )
+        } else {
+            AppState.shared.flash("已启用动态壁纸", kind: .success)
+        }
         Log.wallpaper.info(
-            "Dynamic wallpaper active on \(started.count, privacy: .public) screen(s): \(info.url.lastPathComponent, privacy: .public)"
+            "Dynamic wallpaper active on \(started.count, privacy: .public) screen(s): \(info.url.lastPathComponent, privacy: .public), poster=\(posterURL?.lastPathComponent ?? "nil", privacy: .public)"
         )
         schedulePlaybackStatusLog()
     }
 
-    private func detachDynamicWallpaper(screenIDs: Set<String>) {
+    /// 停止指定屏幕的动态壁纸。
+    /// - Parameter restoreOriginals: 用户主动停止时为 true（恢复原壁纸）；切换静态壁纸时为 false
+    ///   （新静态壁纸已经生效，不能再被原壁纸覆盖）。
+    private func detachDynamicWallpaper(screenIDs: Set<String>, restoreOriginals: Bool) {
         guard isDynamicWallpaperActive else { return }
         let affected = dynamicWallpaperScreens.intersection(screenIDs)
         guard !affected.isEmpty else { return }
 
         dynamicController.stop(screenIDs: affected)
         dynamicWallpaperScreens.subtract(affected)
+
+        var restoreFailures: [String] = []
+        if restoreOriginals {
+            restoreFailures = restoreOriginalWallpapers(for: affected, removeFromMap: true)
+        } else {
+            for screenID in affected {
+                originalWallpapers.removeValue(forKey: screenID)
+            }
+        }
+
         if dynamicWallpaperScreens.isEmpty {
             dynamicWallpaperInfo = nil
+            dynamicPosterURL = nil
             isDynamicWallpaperActive = false
             clearDynamicPersistence()
             Log.wallpaper.info("Dynamic wallpaper stopped because all screens switched to static wallpaper")
         } else {
             persistDynamicWallpaperState()
         }
+        refreshScreens()
+        if !restoreFailures.isEmpty {
+            AppState.shared.flash(
+                "已停止这些屏幕的动态壁纸，但原壁纸恢复失败：\(restoreFailures.joined(separator: "；"))",
+                kind: .error
+            )
+        }
     }
 
     private func syncDynamicWallpaperScreens() {
         guard isDynamicWallpaperActive else { return }
+        let previousScreens = dynamicWallpaperScreens
         dynamicController.syncScreens(Self.makeScreenMap())
         let activeScreenIDs = dynamicController.activeScreenIDs
         guard activeScreenIDs != dynamicWallpaperScreens else { return }
 
+        // 断开的屏幕无法再调用 setDesktopImageURL 恢复；清理其原壁纸记录。
+        let removedScreens = previousScreens.subtracting(activeScreenIDs)
+        for screenID in removedScreens {
+            originalWallpapers.removeValue(forKey: screenID)
+        }
+
         dynamicWallpaperScreens = activeScreenIDs
         if activeScreenIDs.isEmpty {
             dynamicWallpaperInfo = nil
+            dynamicPosterURL = nil
             isDynamicWallpaperActive = false
             clearDynamicPersistence()
             Log.wallpaper.info("Dynamic wallpaper stopped: all target screens disconnected")
@@ -347,6 +447,86 @@ final class WallpaperManager: ObservableObject {
             persistDynamicWallpaperState()
             Log.wallpaper.info("Dynamic wallpaper screens updated: \(activeScreenIDs.count, privacy: .public)")
         }
+        refreshScreens()
+    }
+
+    /// 记录目标屏幕启用动态壁纸前的系统壁纸；已有记录则保留（替换视频时不覆盖）。
+    private func captureOriginalWallpapers(for screenIDs: Set<String>) {
+        let screenMap = Self.makeScreenMap()
+        for screenID in screenIDs.sorted() {
+            if originalWallpapers[screenID] != nil { continue }
+            guard let screen = screenMap[screenID],
+                  let url = NSWorkspace.shared.desktopImageURL(for: screen) else {
+                Log.wallpaper.error("Cannot capture original wallpaper for \(screenID, privacy: .public)")
+                continue
+            }
+            if let poster = dynamicPosterURL, url.standardizedFileURL == poster.standardizedFileURL {
+                Log.wallpaper.error(
+                    "Refuse to record current poster as original wallpaper for \(screenID, privacy: .public)"
+                )
+                continue
+            }
+            originalWallpapers[screenID] = url
+            Log.wallpaper.info("Original wallpaper recorded for \(screenID, privacy: .public)")
+        }
+    }
+
+    /// 把视频首帧 poster 设为这些屏幕的系统壁纸（菜单栏毛玻璃背景来源）。返回失败原因。
+    @discardableResult
+    private func applyPoster(_ posterURL: URL?, to screenIDs: Set<String>) -> [String] {
+        guard let posterURL, FileManager.default.isReadableFile(atPath: posterURL.path) else {
+            return []
+        }
+        let screenMap = Self.makeScreenMap()
+        var failures: [String] = []
+
+        for screenID in screenIDs.sorted() {
+            guard let screen = screenMap[screenID] else {
+                failures.append("有屏幕已断开连接")
+                continue
+            }
+            do {
+                try NSWorkspace.shared.setDesktopImageURL(posterURL, for: screen, options: [:])
+            } catch {
+                failures.append("\(screen.localizedName)：\(error.localizedDescription)")
+                Log.wallpaper.error(
+                    "setDesktopImageURL(poster) failed for \(screenID, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
+            }
+        }
+        if failures.isEmpty {
+            Log.wallpaper.info("Menu bar poster applied to \(screenIDs.count, privacy: .public) screen(s)")
+        }
+        return failures
+    }
+
+    /// 恢复这些屏幕的原系统壁纸；`removeFromMap` 为 false 时保留记录（App 退出后下次启动仍能恢复）。
+    @discardableResult
+    private func restoreOriginalWallpapers(for screenIDs: Set<String>, removeFromMap: Bool) -> [String] {
+        let screenMap = Self.makeScreenMap()
+        var failures: [String] = []
+
+        for screenID in screenIDs.sorted() {
+            guard let original = originalWallpapers[screenID] else { continue }
+            guard let screen = screenMap[screenID] else {
+                failures.append("\(screenID)：屏幕已断开")
+                if removeFromMap { originalWallpapers.removeValue(forKey: screenID) }
+                continue
+            }
+            do {
+                try NSWorkspace.shared.setDesktopImageURL(original, for: screen, options: [:])
+                Log.wallpaper.info("Restored original wallpaper for \(screenID, privacy: .public)")
+            } catch {
+                failures.append("\(screen.localizedName)：\(error.localizedDescription)")
+                Log.wallpaper.error(
+                    "Restore original wallpaper failed for \(screenID, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
+            }
+            if removeFromMap {
+                originalWallpapers.removeValue(forKey: screenID)
+            }
+        }
+        return failures
     }
 
     private func persistDynamicWallpaperState() {
@@ -354,9 +534,14 @@ final class WallpaperManager: ObservableObject {
             enqueueDynamicStateWrite { await WallpaperVideoStore.clearState() }
             return
         }
+        let activeOriginals = originalWallpapers
+            .filter { dynamicWallpaperScreens.contains($0.key) }
+            .mapValues { $0.path }
         let state = WallpaperDynamicState(
             videoPath: info.url.path,
-            screenIDs: dynamicWallpaperScreens.sorted()
+            screenIDs: dynamicWallpaperScreens.sorted(),
+            posterPath: dynamicPosterURL?.path,
+            originalWallpapers: activeOriginals.isEmpty ? nil : activeOriginals
         )
         enqueueDynamicStateWrite { await WallpaperVideoStore.saveState(state) }
     }
@@ -395,6 +580,7 @@ final class WallpaperManager: ObservableObject {
             return
         }
 
+        var posterAppliedScreens: Set<String> = []
         do {
             let info = try await WallpaperVideoStore.inspectVideo(url: storedURL)
             let screenMap = Self.makeScreenMap()
@@ -404,6 +590,41 @@ final class WallpaperManager: ObservableObject {
                 Log.wallpaper.info("Dynamic wallpaper restore postponed: saved screens are not connected")
                 return
             }
+
+            // 优先使用持久化的原壁纸；旧状态没有该字段时，当前系统壁纸就是原壁纸
+            // （旧版本没有设置过 poster），但绝不能把已知的旧 poster 记成原壁纸。
+            var originals: [String: URL] = [:]
+            if let savedOriginals = state.originalWallpapers {
+                for (screenID, path) in savedOriginals where availableIDs.contains(screenID) {
+                    guard !path.isEmpty else { continue }
+                    originals[screenID] = URL(fileURLWithPath: path).standardizedFileURL
+                }
+            }
+            let savedPoster = state.posterPath.map { URL(fileURLWithPath: $0).standardizedFileURL }
+            var missingOriginals: [String] = []
+            for screenID in availableIDs where originals[screenID] == nil {
+                guard let screen = screenMap[screenID],
+                      let current = NSWorkspace.shared.desktopImageURL(for: screen) else {
+                    missingOriginals.append(screenID)
+                    continue
+                }
+                if let savedPoster, current.standardizedFileURL == savedPoster {
+                    missingOriginals.append(screenID)
+                    Log.wallpaper.error(
+                        "Cannot recover original wallpaper for \(screenID, privacy: .public): current wallpaper is an old poster"
+                    )
+                    continue
+                }
+                originals[screenID] = current
+            }
+            originalWallpapers = originals
+
+            let posterURL = try? await WallpaperVideoStore.ensurePoster(for: storedURL)
+            if posterURL == nil {
+                Log.wallpaper.error("Menu bar poster generation failed during restore")
+            }
+            let posterFailures = applyPoster(posterURL, to: availableIDs)
+            posterAppliedScreens = availableIDs
 
             let started = dynamicController.start(
                 videoURL: storedURL,
@@ -416,21 +637,47 @@ final class WallpaperManager: ObservableObject {
 
             dynamicWallpaperInfo = info
             dynamicWallpaperScreens = started
+            dynamicPosterURL = posterURL
             isDynamicWallpaperActive = true
-            if started != savedIDs {
-                persistDynamicWallpaperState()
+            originalWallpapers = originalWallpapers.filter { started.contains($0.key) }
+            persistDynamicWallpaperState()
+            refreshScreens()
+
+            if posterURL == nil {
+                AppState.shared.flash("动态壁纸已恢复，但菜单栏 poster 生成失败，菜单栏背景可能不匹配", kind: .error)
+            } else if !posterFailures.isEmpty {
+                AppState.shared.flash(
+                    "动态壁纸已恢复，但部分屏幕菜单栏背景设置失败：\(posterFailures.joined(separator: "；"))",
+                    kind: .error
+                )
+            } else if !missingOriginals.isEmpty {
+                AppState.shared.flash("动态壁纸已恢复，但部分屏幕缺少原壁纸记录，停止时可能无法恢复", kind: .error)
             }
+
             Log.wallpaper.info(
                 "Dynamic wallpaper restored on \(started.count, privacy: .public) screen(s) from \(storedURL.lastPathComponent, privacy: .public)"
             )
             #if DEBUG
             NSLog(
-                "Kaiming debug: dynamic wallpaper restored screens=\(started.count) video=\(storedURL.lastPathComponent)"
+                "Kaiming debug: dynamic wallpaper restored screens=\(started.count) video=\(storedURL.lastPathComponent) poster=\(posterURL?.lastPathComponent ?? "nil")"
             )
             #endif
             schedulePlaybackStatusLog()
         } catch {
             let message = error.localizedDescription
+            if !posterAppliedScreens.isEmpty {
+                let restoreFailures = restoreOriginalWallpapers(for: posterAppliedScreens, removeFromMap: true)
+                if !restoreFailures.isEmpty {
+                    Log.wallpaper.error(
+                        "Restore original wallpapers after failed restore failed: \(restoreFailures.joined(separator: "; "), privacy: .public)"
+                    )
+                }
+            }
+            originalWallpapers.removeAll()
+            dynamicWallpaperScreens = []
+            dynamicWallpaperInfo = nil
+            dynamicPosterURL = nil
+            isDynamicWallpaperActive = false
             Log.wallpaper.error("Dynamic wallpaper restore failed: \(message, privacy: .public)")
             AppState.shared.flash("动态壁纸恢复失败：\(message)", kind: .error)
             await WallpaperVideoStore.clearState()
@@ -551,7 +798,7 @@ final class WallpaperManager: ObservableObject {
                 if Task.isCancelled || !isRotating { return }
                 let result = applyWallpaper(storedURL, to: [screenID])
                 if !result.applied.isEmpty {
-                    detachDynamicWallpaper(screenIDs: result.applied)
+                    detachDynamicWallpaper(screenIDs: result.applied, restoreOriginals: false)
                 }
                 if !result.failures.isEmpty {
                     failureCount += 1
@@ -600,7 +847,7 @@ final class WallpaperManager: ObservableObject {
     private func finishInstall(storedURL: URL, screenIDs: Set<String>, announce: Bool) {
         let result = applyWallpaper(storedURL, to: screenIDs)
         if !result.applied.isEmpty {
-            detachDynamicWallpaper(screenIDs: result.applied)
+            detachDynamicWallpaper(screenIDs: result.applied, restoreOriginals: false)
         }
         isBusy = false
         refreshScreens()
@@ -677,6 +924,9 @@ final class WallpaperManager: ObservableObject {
         }
         if let dynamicURL = dynamicWallpaperInfo?.url {
             paths.insert(dynamicURL.standardizedFileURL.path)
+        }
+        if let posterURL = dynamicPosterURL {
+            paths.insert(posterURL.standardizedFileURL.path)
         }
         return paths
     }

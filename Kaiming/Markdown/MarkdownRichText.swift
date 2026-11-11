@@ -47,6 +47,9 @@ enum MarkdownRichTextParser {
     private static let imageLinkRegex = try! NSRegularExpression(
         pattern: #"(?is)!\[[^\]]*\]\([^)]*\)"#
     )
+    private static let htmlImageTagRegex = try! NSRegularExpression(
+        pattern: #"(?is)<img\b[^>]*>"#
+    )
 
     /// 文档中的 HTML 块（限制数量与大小，避免对超长文档做昂贵渲染）。
     static func htmlBlocks(in text: String) -> [MarkdownHTMLBlock] {
@@ -101,6 +104,9 @@ enum MarkdownRichTextParser {
 
         var imageRanges: [NSRange] = []
         imageLinkRegex.enumerateMatches(in: text, options: [], range: fullRange) { match, _, _ in
+            if let match { imageRanges.append(match.range) }
+        }
+        htmlImageTagRegex.enumerateMatches(in: text, options: [], range: fullRange) { match, _, _ in
             if let match { imageRanges.append(match.range) }
         }
 

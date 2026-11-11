@@ -23,7 +23,7 @@ struct KaimingApp: App {
                 .environmentObject(settings)
                 .environmentObject(appState)
         }
-        .defaultSize(width: 1100, height: 720)
+        .defaultSize(width: 1200, height: 760)
         .defaultPosition(.center)
         .windowResizability(.contentMinSize)
 

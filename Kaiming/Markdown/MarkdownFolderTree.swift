@@ -130,6 +130,43 @@ final class MarkdownFolderTree: ObservableObject {
         }
     }
 
+    /// 展开到指定文件（懒加载祖先），并收起其他目录。
+    /// 文件不在当前项目根内时不改变树，只返回 false。
+    @discardableResult
+    func reveal(fileURL: URL) async -> Bool {
+        guard let rootURL else { return false }
+        let expectedRoot = rootURL
+        let file = fileURL.standardizedFileURL
+        let rootPath = expectedRoot.path.hasSuffix("/") ? expectedRoot.path : expectedRoot.path + "/"
+        guard file.path.hasPrefix(rootPath) else { return false }
+
+        let relativePath = String(file.path.dropFirst(rootPath.count))
+        let components = relativePath
+            .split(separator: "/")
+            .map(String.init)
+        guard !components.isEmpty else { return false }
+
+        guard await loadChildrenAndReturn(expectedRoot) != nil else { return false }
+        guard rootURL == expectedRoot else { return false }
+
+        var expanded: Set<URL> = [expectedRoot]
+        var current = expectedRoot
+        for component in components.dropLast() {
+            guard let children = await loadChildrenAndReturn(current),
+                  let directory = children.first(where: { $0.name == component && $0.isDirectory }) else {
+                return false
+            }
+            expanded.insert(directory.url)
+            current = directory.url
+        }
+        _ = await loadChildrenAndReturn(current)
+        guard rootURL == expectedRoot else { return false }
+
+        expandedDirectories = expanded
+        Log.markdown.info("Revealed \(file.path, privacy: .public) in folder tree")
+        return true
+    }
+
     // MARK: - 最近目录
 
     @discardableResult
@@ -158,28 +195,40 @@ final class MarkdownFolderTree: ObservableObject {
     // MARK: - 目录读取
 
     private func loadChildren(of directory: URL, force: Bool) {
-        if !force, childrenByDirectory[directory] != nil {
-            return
+        Task { @MainActor [weak self] in
+            _ = await self?.loadChildrenAndReturn(directory, force: force)
+        }
+    }
+
+    /// 加载目录并等待结果（`reveal` 需要逐级懒加载祖先）。
+    @discardableResult
+    private func loadChildrenAndReturn(
+        _ directory: URL,
+        force: Bool = false
+    ) async -> [MarkdownTreeNode]? {
+        if !force, let existing = childrenByDirectory[directory] {
+            return existing
         }
 
         let token = UUID()
         loadTokens[directory] = token
         loadingDirectories.insert(directory)
 
-        Task { @MainActor [weak self] in
-            let result = await Self.readEntries(in: directory)
-            guard let self, self.loadTokens[directory] == token else { return }
-            self.loadTokens[directory] = nil
-            self.loadingDirectories.remove(directory)
-
-            switch result {
-            case .entries(let nodes):
-                self.childrenByDirectory[directory] = nodes
-            case .failure(let message):
-                self.childrenByDirectory[directory] = []
-                self.setError(message)
-            }
+        let result = await Self.readEntries(in: directory)
+        guard loadTokens[directory] == token else {
+            return childrenByDirectory[directory]
         }
+        loadTokens[directory] = nil
+        loadingDirectories.remove(directory)
+
+        switch result {
+        case .entries(let nodes):
+            childrenByDirectory[directory] = nodes
+        case .failure(let message):
+            childrenByDirectory[directory] = []
+            setError(message)
+        }
+        return childrenByDirectory[directory]
     }
 
     private nonisolated static func readEntries(

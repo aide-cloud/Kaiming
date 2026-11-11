@@ -29,9 +29,17 @@ struct MarkdownWindowView: View {
     @State private var isSidebarVisible = false
     @State private var didInitialLoad = false
     @State private var preview: MarkdownPreview?
-    @State private var isInspectorVisible = false
+    @State private var isInspectorVisible = true
+    @State private var headings: [MarkdownHeading] = []
     @State private var htmlPreviews: [MarkdownHTMLPreview] = []
     @State private var inspectorRefreshTask: Task<Void, Never>?
+    @State private var scrollRequest: MarkdownScrollRequest?
+    @State private var isRenderedPreviewVisible = false
+    @State private var renderedDocument = MarkdownRenderedDocument()
+    @State private var renderedPreviewTask: Task<Void, Never>?
+    @State private var renderedPreviewDocumentURL: URL?
+    @State private var hasHTMLBlocks = false
+    @State private var documentScanTask: Task<Void, Never>?
 
     private enum PendingAction {
         case newDocument
@@ -54,6 +62,11 @@ struct MarkdownWindowView: View {
             if let status = model.status {
                 statusBanner(status)
                     .transition(.move(edge: .top).combined(with: .opacity))
+            }
+
+            if hasHTMLBlocks && !isRenderedPreviewVisible && preview == nil {
+                htmlHintBanner
+                    .transition(.opacity)
             }
 
             HStack(spacing: 0) {
@@ -164,13 +177,28 @@ struct MarkdownWindowView: View {
             }
             syncReferenceBase()
             scheduleInspectorRefresh(immediate: true)
+            if isRenderedPreviewVisible {
+                scheduleRenderedPreviewReload()
+            }
         }
         .onChange(of: model.documentURL) { _, _ in
             syncReferenceBase()
             scheduleInspectorRefresh(immediate: true)
+            scheduleDocumentScan()
+            if isRenderedPreviewVisible {
+                loadRenderedPreview()
+            }
         }
         .onChange(of: model.text) { _, _ in
             scheduleInspectorRefresh()
+            scheduleDocumentScan()
+            if isRenderedPreviewVisible {
+                if renderedPreviewDocumentURL != model.documentURL {
+                    loadRenderedPreview()
+                } else {
+                    scheduleRenderedPreviewReload()
+                }
+            }
         }
     }
 
@@ -213,7 +241,10 @@ struct MarkdownWindowView: View {
             if isInspectorVisible {
                 MarkdownInspectorView(
                     linkStore: linkStore,
+                    headings: headings,
                     htmlPreviews: htmlPreviews,
+                    onSelectHeading: { selectHeading($0) },
+                    onOpenRenderedPreview: { openRenderedPreview() },
                     onRefresh: { refreshRichContent(forceLinkRefresh: true) },
                     onClose: {
                         isInspectorVisible = false
@@ -227,11 +258,15 @@ struct MarkdownWindowView: View {
         .animation(.easeInOut(duration: 0.18), value: isInspectorVisible)
     }
 
+    private var showEditor: Bool {
+        preview == nil && !isRenderedPreviewVisible
+    }
+
     private var editorArea: some View {
         ZStack {
             editor
-                .opacity(preview == nil ? 1 : 0)
-                .allowsHitTesting(preview == nil)
+                .opacity(showEditor ? 1 : 0)
+                .allowsHitTesting(showEditor)
 
             if let preview {
                 MarkdownPreviewView(
@@ -241,9 +276,39 @@ struct MarkdownWindowView: View {
                     onOpenExternal: { openWithDefaultApp(preview.url) },
                     onReveal: { revealInFinder(preview.url) }
                 )
+            } else if isRenderedPreviewVisible {
+                MarkdownRenderedPreviewView(
+                    document: renderedDocument,
+                    sourceName: model.displayName,
+                    onRefresh: { loadRenderedPreview() },
+                    onClose: closeRenderedPreview
+                )
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(
+            MarkdownEditorScrollAccessor(request: scrollRequest)
+                .frame(width: 0, height: 0)
+        )
+    }
+
+    private var htmlHintBanner: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "chevron.left.forwardslash.chevron.right")
+                .font(.system(size: 10))
+            Text("文档包含 HTML 块；编辑区显示源码。")
+                .font(.system(size: 10))
+            Button("渲染预览") {
+                openRenderedPreview()
+            }
+            .controlSize(.small)
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.accentColor.opacity(0.08))
     }
 
     private var placeholder: NSAttributedString? {
@@ -295,17 +360,28 @@ struct MarkdownWindowView: View {
             toolbarButton(
                 "sidebar.left",
                 help: isSidebarVisible ? "隐藏目录树" : "显示目录树",
-                isActive: isSidebarVisible
+                isActive: isSidebarVisible,
+                tooltipAlignment: .bottomTrailing
             ) {
                 isSidebarVisible.toggle()
             }
 
             toolbarButton(
                 "sidebar.right",
-                help: isInspectorVisible ? "隐藏富内容 inspector" : "显示富内容 inspector（链接卡片 / HTML 预览）",
-                isActive: isInspectorVisible
+                help: isInspectorVisible ? "隐藏内容导航" : "显示内容导航（大纲 / 链接卡片 / HTML）",
+                isActive: isInspectorVisible,
+                tooltipAlignment: .bottomTrailing
             ) {
                 toggleInspector()
+            }
+
+            toolbarButton(
+                "doc.richtext",
+                help: isRenderedPreviewVisible ? "关闭渲染预览" : "渲染预览（HTML/Markdown，只读，含图片）",
+                isActive: isRenderedPreviewVisible,
+                tooltipAlignment: .bottomTrailing
+            ) {
+                toggleRenderedPreview()
             }
 
             toolbarDivider
@@ -324,6 +400,7 @@ struct MarkdownWindowView: View {
         .padding(.horizontal, 12)
         .frame(height: 40)
         .background(.bar)
+        .zIndex(20)
     }
 
     private var fileSummary: some View {
@@ -367,7 +444,7 @@ struct MarkdownWindowView: View {
             }
             .buttonStyle(.borderless)
             .disabled(settings.markdownFontSize <= 10)
-            .help("减小正文字号")
+            .markdownTooltip("减小正文字号", alignment: .bottomTrailing)
             .accessibilityLabel("减小正文字号")
 
             Text("\(Int(settings.markdownFontSize.rounded())) pt")
@@ -386,7 +463,7 @@ struct MarkdownWindowView: View {
             }
             .buttonStyle(.borderless)
             .disabled(settings.markdownFontSize >= 36)
-            .help("增大正文字号")
+            .markdownTooltip("增大正文字号", alignment: .bottomTrailing)
             .accessibilityLabel("增大正文字号")
         }
     }
@@ -401,6 +478,7 @@ struct MarkdownWindowView: View {
         _ symbol: String,
         help: String,
         isActive: Bool = false,
+        tooltipAlignment: Alignment = .bottomLeading,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
@@ -411,7 +489,7 @@ struct MarkdownWindowView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)
-        .help(help)
+        .markdownTooltip(help, alignment: tooltipAlignment)
         .accessibilityLabel(help)
     }
 
@@ -447,11 +525,13 @@ struct MarkdownWindowView: View {
         switch action {
         case .newDocument:
             closePreview()
+            closeRenderedPreview()
             model.newDocument()
         case .openFile:
             beginImport(.markdownFiles)
         case .loadClipboard:
             closePreview()
+            closeRenderedPreview()
             loadFromClipboard()
         case .openFileURL(let url):
             loadMarkdownFile(url)
@@ -492,11 +572,19 @@ struct MarkdownWindowView: View {
         if ProcessInfo.processInfo.arguments.contains("--markdown-inspector") {
             isInspectorVisible = true
         }
+        if ProcessInfo.processInfo.arguments.contains("--markdown-render-preview") {
+            isRenderedPreviewVisible = true
+            isEditorFocused = false
+        }
         #endif
 
         syncReferenceBase()
+        scanDocumentHTML()
         if isInspectorVisible {
             refreshRichContent()
+        }
+        if isRenderedPreviewVisible {
+            loadRenderedPreview()
         }
     }
 
@@ -549,12 +637,93 @@ struct MarkdownWindowView: View {
     private func refreshRichContent(forceLinkRefresh: Bool = false) {
         guard isInspectorVisible else { return }
         let baseURL = referenceBaseURL
+        headings = MarkdownOutlineParser.headings(in: model.text)
         let blocks = MarkdownRichTextParser.htmlBlocks(in: model.text)
         htmlPreviews = blocks.map { MarkdownHTMLPreviewRenderer.render(block: $0, baseURL: baseURL) }
         let links = MarkdownRichTextParser.externalLinks(in: model.text)
         linkStore.update(urls: links)
         if forceLinkRefresh {
             linkStore.refresh()
+        }
+    }
+
+    // MARK: - 渲染预览 / 大纲
+
+    private func toggleRenderedPreview() {
+        if isRenderedPreviewVisible {
+            closeRenderedPreview()
+        } else {
+            closePreview()
+            isRenderedPreviewVisible = true
+            isEditorFocused = false
+            loadRenderedPreview()
+        }
+    }
+
+    private func openRenderedPreview() {
+        if isRenderedPreviewVisible {
+            loadRenderedPreview()
+        } else {
+            toggleRenderedPreview()
+        }
+    }
+
+    private func closeRenderedPreview() {
+        guard isRenderedPreviewVisible else { return }
+        renderedPreviewTask?.cancel()
+        renderedPreviewTask = nil
+        isRenderedPreviewVisible = false
+        isEditorFocused = true
+    }
+
+    private func loadRenderedPreview() {
+        renderedPreviewTask?.cancel()
+        renderedDocument = MarkdownRenderedDocument(isLoading: true)
+        guard isRenderedPreviewVisible else { return }
+
+        renderedPreviewDocumentURL = model.documentURL
+        let markdown = model.text
+        let baseURL = referenceBaseURL
+        let configuration = model.configuration
+        renderedPreviewTask = Task { @MainActor in
+            let document = await MarkdownRenderedPreviewBuilder.build(
+                markdown: markdown,
+                baseURL: baseURL,
+                configuration: configuration
+            )
+            guard !Task.isCancelled, isRenderedPreviewVisible else { return }
+            renderedDocument = document
+        }
+    }
+
+    private func scheduleRenderedPreviewReload() {
+        guard isRenderedPreviewVisible else { return }
+        renderedPreviewTask?.cancel()
+        renderedPreviewTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 650_000_000)
+            guard !Task.isCancelled, isRenderedPreviewVisible else { return }
+            loadRenderedPreview()
+        }
+    }
+
+    private func selectHeading(_ heading: MarkdownHeading) {
+        closePreview()
+        closeRenderedPreview()
+        isEditorFocused = true
+        scrollRequest = MarkdownScrollRequest(location: heading.location)
+    }
+
+    private func scanDocumentHTML() {
+        documentScanTask?.cancel()
+        hasHTMLBlocks = !MarkdownRichTextParser.htmlBlocks(in: model.text).isEmpty
+    }
+
+    private func scheduleDocumentScan() {
+        documentScanTask?.cancel()
+        documentScanTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard !Task.isCancelled else { return }
+            hasHTMLBlocks = !MarkdownRichTextParser.htmlBlocks(in: model.text).isEmpty
         }
     }
 
@@ -650,12 +819,19 @@ struct MarkdownWindowView: View {
 
     private func loadMarkdownFile(_ url: URL) {
         closePreview()
+        // 渲染预览是独立的查看模式：切换 Markdown 文档时保留，预览内容随后自动刷新。
         model.open(url: url)
         isEditorFocused = true
         syncReferenceBase()
+
+        let standardized = url.standardizedFileURL
+        if model.documentURL?.standardizedFileURL == standardized {
+            Task { await folderTree.reveal(fileURL: standardized) }
+        }
     }
 
     private func showPreview(_ url: URL) {
+        closeRenderedPreview()
         let kind = MarkdownFileTypes.kind(of: url)
         preview = MarkdownPreview(
             url: url,

@@ -76,6 +76,7 @@ struct MarkdownPreviewView: View {
         .padding(.horizontal, 12)
         .frame(height: 40)
         .background(.bar)
+        .zIndex(20)
     }
 
     private func iconButton(
@@ -90,7 +91,7 @@ struct MarkdownPreviewView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)
-        .help(help)
+        .markdownTooltip(help, alignment: .bottomTrailing)
         .accessibilityLabel(help)
     }
 
