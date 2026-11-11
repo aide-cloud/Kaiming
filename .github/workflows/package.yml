@@ -19,8 +19,6 @@ jobs:
     name: Build & package macOS app
     runs-on: macos-15
     timeout-minutes: 45
-    env:
-      UNIVERSAL: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,8 +26,19 @@ jobs:
       - name: Select Xcode 16
         run: |
           set -euo pipefail
-          # 避免 BSD sort 的 -V（macOS 自带 sort 不支持）；16.x 版本按字典序足够。
-          XCODE_APP="$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort | tail -1 || true)"
+          # Kaiming 的完整验证基线是 Xcode 16.2；优先使用它，避免 runner 默认
+          # 新版 Swift 编译器在第三方 SwiftMath 上产生平台差异错误。
+          XCODE_APP=""
+          for version in 16.2 16.1 16.0 16.3 16.4 16.5; do
+            if [ -d "/Applications/Xcode_$version.app" ]; then
+              XCODE_APP="/Applications/Xcode_$version.app"
+              break
+            fi
+          done
+          if [ -z "$XCODE_APP" ]; then
+            # 避免 BSD sort 的 -V；16.x 版本按字典序足够。
+            XCODE_APP="$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort | tail -1 || true)"
+          fi
           if [ -n "$XCODE_APP" ]; then
             sudo xcode-select -s "$XCODE_APP"
           fi
@@ -41,8 +50,17 @@ jobs:
             exit 1
           fi
 
-      - name: Build Release archive (ad-hoc signed, universal)
-        run: ./Scripts/archive.sh
+      - name: Build Release archive (ad-hoc signed)
+        run: |
+          set -euo pipefail
+          if UNIVERSAL=1 ./Scripts/archive.sh; then
+            echo "ARCH_KIND=universal" >> "$GITHUB_ENV"
+          else
+            echo "::warning::Universal build failed (x86_64/SwiftMath toolchain); retrying arm64-only"
+            rm -rf build/Kaiming.xcarchive build/export
+            UNIVERSAL=0 ./Scripts/archive.sh
+            echo "ARCH_KIND=arm64" >> "$GITHUB_ENV"
+          fi
 
       - name: Verify app
         run: |
@@ -51,6 +69,10 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "$APP"
           lipo -info "$APP/Contents/MacOS/Kaiming"
           lipo -info "$APP/Contents/Frameworks/MarkdownEngine.framework/Versions/A/MarkdownEngine"
+          if [ "${ARCH_KIND:-arm64}" = "universal" ]; then
+            lipo -info "$APP/Contents/MacOS/Kaiming" | grep -q "x86_64"
+            lipo -info "$APP/Contents/MacOS/Kaiming" | grep -q "arm64"
+          fi
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist"
           /usr/libexec/PlistBuddy -c 'Print :LSUIElement' "$APP/Contents/Info.plist"
 
@@ -77,6 +99,6 @@ jobs:
           else
             gh release create "$TAG" build/dist/* \
               --title "Kaiming $TAG" \
-              --notes "Automated macOS build for $TAG. Ad-hoc signed; see docs/distribution.md for Developer ID signing and notarization." \
+              --notes "Automated macOS build for $TAG (${ARCH_KIND} binary). Ad-hoc signed; see docs/distribution.md for Developer ID signing and notarization." \
               --verify-tag
           fi

@@ -14,8 +14,10 @@
 ## Runner 与工具链
 
 - `macos-15`（Apple Silicon runner）
-- 自动选择 `/Applications/Xcode_16*.app` 中最新的 Xcode；要求 Xcode 16+
-- `UNIVERSAL=1`：同时构建 `arm64` 与 `x86_64`，产物为通用二进制
+- 优先选择 `/Applications/Xcode_16.2.app`（Kaiming 的验证基线），其次任意 Xcode 16+
+- 先尝试 `UNIVERSAL=1`（arm64 + x86_64）；若 runner 的新版 Swift 编译器在第三方
+  SwiftMath 的 x86_64 编译上失败，工作流会自动记录警告并**回退 arm64-only** 打包，
+  保证仍产出 ZIP/DMG（Release notes 会标明 `${ARCH_KIND}`）
 - 无需 Apple 证书；使用 **ad-hoc 签名**，Hardened Runtime 关闭（与本地归档一致）
 
 ## 产物
