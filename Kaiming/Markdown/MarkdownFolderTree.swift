@@ -35,11 +35,20 @@ final class MarkdownFolderTree: ObservableObject {
     @Published private(set) var expandedDirectories: Set<URL> = []
     @Published private(set) var loadingDirectories: Set<URL> = []
     @Published private(set) var errorMessage: String?
+    /// 最近打开过的项目文件夹，最新的在最前面；最多保留 ``maxRecentFolders`` 个。
+    @Published private(set) var recentFolders: [URL] = []
 
-    private static let recentFolderKey = "kaiming.markdown.sidebar.recentFolderPath"
+    /// 旧版本只存一个路径，用于迁移到 ``recentFoldersKey``。
+    private static let legacyRecentFolderKey = "kaiming.markdown.sidebar.recentFolderPath"
+    private static let recentFoldersKey = "kaiming.markdown.sidebar.recentFolders"
+    private static let maxRecentFolders = 10
 
     private var loadTokens: [URL: UUID] = [:]
     private var scopedRootURL: URL?
+
+    init() {
+        recentFolders = Self.loadRecentFolders()
+    }
 
     // MARK: - 派生状态
 
@@ -79,11 +88,16 @@ final class MarkdownFolderTree: ObservableObject {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: standardized.path, isDirectory: &isDirectory),
               isDirectory.boolValue else {
+            // 失效的最近项目顺手清掉，避免下一次仍然点到一个不存在的目录。
+            removeRecent(standardized)
             setError("无法打开文件夹：路径不存在或不是文件夹（\(folder.path)）")
             return
         }
 
         if standardized == rootURL {
+            if remember {
+                self.remember(folder: standardized)
+            }
             refresh()
             return
         }
@@ -101,7 +115,7 @@ final class MarkdownFolderTree: ObservableObject {
         loadTokens = [:]
 
         if remember {
-            UserDefaults.standard.set(standardized.path, forKey: Self.recentFolderKey)
+            self.remember(folder: standardized)
         }
 
         loadChildren(of: standardized, force: true)
@@ -169,23 +183,97 @@ final class MarkdownFolderTree: ObservableObject {
 
     // MARK: - 最近目录
 
+    /// 打开文件夹后把它记到最近列表（去重、置顶、最多 10 条）。
+    func remember(folder: URL) {
+        let standardized = folder.standardizedFileURL
+        guard Self.isDirectory(standardized) else { return }
+
+        var updated = recentFolders.filter { $0.path != standardized.path }
+        updated.insert(standardized, at: 0)
+        if updated.count > Self.maxRecentFolders {
+            updated.removeLast(updated.count - Self.maxRecentFolders)
+        }
+        guard updated.map(\.path) != recentFolders.map(\.path) else { return }
+        recentFolders = updated
+        persistRecentFolders()
+    }
+
+    /// 从最近列表移除一个目录；不影响当前已经打开的目录树。
+    func removeRecent(_ folder: URL) {
+        let target = folder.standardizedFileURL.path
+        let updated = recentFolders.filter { $0.path != target }
+        guard updated.count != recentFolders.count else { return }
+        recentFolders = updated
+        persistRecentFolders()
+    }
+
+    /// 校验并清理已经不存在的最近项目。
+    func pruneInvalidRecentFolders() {
+        let valid = recentFolders.filter { Self.isDirectory($0) }
+        guard valid.count != recentFolders.count else { return }
+        recentFolders = valid
+        persistRecentFolders()
+    }
+
+    /// 打开最近一个可用的项目文件夹；已有根目录时直接返回 true。
     @discardableResult
     func restoreRecentFolder() -> Bool {
         guard rootURL == nil else { return true }
-        guard let path = UserDefaults.standard.string(forKey: Self.recentFolderKey), !path.isEmpty else {
-            return false
-        }
+        pruneInvalidRecentFolders()
+        guard let candidate = recentFolders.first else { return false }
 
-        let url = URL(fileURLWithPath: path, isDirectory: true)
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
-              isDirectory.boolValue else {
-            UserDefaults.standard.removeObject(forKey: Self.recentFolderKey)
-            return false
-        }
-
-        open(folder: url, remember: false)
+        open(folder: candidate, remember: false)
         return rootURL != nil
+    }
+
+    private func persistRecentFolders() {
+        let defaults = UserDefaults.standard
+        if recentFolders.isEmpty {
+            defaults.removeObject(forKey: Self.recentFoldersKey)
+        } else {
+            defaults.set(recentFolders.map(\.path), forKey: Self.recentFoldersKey)
+        }
+    }
+
+    /// 读取持久化的最近目录，并迁移旧版本的单个路径键。
+    private static func loadRecentFolders() -> [URL] {
+        let defaults = UserDefaults.standard
+        var paths = defaults.stringArray(forKey: recentFoldersKey) ?? []
+
+        if let legacyPath = defaults.string(forKey: legacyRecentFolderKey), !legacyPath.isEmpty {
+            if !paths.contains(legacyPath) {
+                paths.insert(legacyPath, at: 0)
+            }
+            defaults.removeObject(forKey: legacyRecentFolderKey)
+        }
+
+        var seen = Set<String>()
+        var urls: [URL] = []
+        for path in paths where !path.isEmpty {
+            let url = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
+            guard Self.isDirectory(url), seen.insert(url.path).inserted else { continue }
+            urls.append(url)
+            if urls.count >= maxRecentFolders {
+                break
+            }
+        }
+
+        if paths != urls.map(\.path) {
+            if urls.isEmpty {
+                defaults.removeObject(forKey: recentFoldersKey)
+            } else {
+                defaults.set(urls.map(\.path), forKey: recentFoldersKey)
+            }
+        }
+        return urls
+    }
+
+    private static func isDirectory(_ url: URL) -> Bool {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+            return false
+        }
+        return isDirectory.boolValue
     }
 
     func dismissError() {

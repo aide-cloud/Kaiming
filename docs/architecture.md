@@ -28,7 +28,7 @@
 | 层 | 文件 | 职责 |
 |---|---|---|
 | 应用壳 | `App/KaimingApp.swift`、`App/AppDelegate.swift` | scene 组合（MenuBarExtra + Markdown + 设置）、启动/退出、权限刷新、登录项 |
-| 共享基础 | `Shared/*` | 设置、状态、路由、权限、快捷键、日志、路径、截图模式 |
+| 共享基础 | `Shared/*` | 设置、状态、路由、权限（`PermissionCenter`）、快捷键、日志、路径、截图模式 |
 | 功能模块 | `Screenshot/`、`Clipboard/`、`Wallpaper/`、`Markdown/` | 各自 UI + 业务；对外只暴露冻结入口 |
 | UI 组合 | `MenuBar/MenuBarPanel.swift` | 唯一把三个模块面板拼在一起的地方 |
 | 渲染内核 | `MarkdownKit/`（framework target） | 内嵌 TextKit 2 Markdown 引擎（Swift 5 模式） |
@@ -36,12 +36,13 @@
 ## 3. 模块边界
 
 - **Screenshot**：`ScreenshotCoordinator.shared.start(mode:)` 是唯一入口。
-  它只依赖共享类型（`CaptureMode`、`SettingsStore`、`AppState`、`AppPaths`、`ScreenCapturePermission`、`Log`），
+  它只依赖共享类型（`CaptureMode`、`SettingsStore`、`AppState`、`AppPaths`、`ScreenCapturePermission`、
+  `AccessibilityPermission`、`PermissionCenter`、`Log`），
   不引用 Clipboard / Wallpaper / Markdown 的代码。
 - **Clipboard**：`ClipboardManager.shared` 自持串行队列与历史。
   UI 面板只调用 manager，不直接碰 `NSPasteboard`。
 - **Wallpaper**：`WallpaperManager.shared` 负责多屏映射、持久化与 `NSWorkspace` 调用。
-  数据源是剪贴板（通过自己的串行队列读）、用户选的图片文件、`AppPaths.captures` 目录。
+  数据源是剪贴板（通过自己的串行队列读）以及用户选择的图片或视频文件（统一入口按类型路由）。
 - **Markdown**：独立窗口，自持文档模型；与引擎的交互只通过 `import MarkdownEngine` 的公开 API。
 - **组合层例外**：`MenuBar/MenuBarPanel.swift` 是 App 的组合层，唯一允许同时引用多个模块
   公开入口的位置（例如「截图后快捷操作」直接调用 `WallpaperManager.setWallpaper`）。
@@ -67,8 +68,7 @@
 
 ```
 start(mode:.region)
-  ├─ 权限预检（CGPreflightScreenCaptureAccess）
-  │    └─ 未授权 → flash + 打开系统设置（结束）
+  ├─ preflight 只用于日志，不拦截（TCC 可能绑定旧构建签名）
   ├─ SCShareableContent（排除本应用）
   │    └─ displays 为空 → 视为权限问题，可操作提示（结束）
   ├─ 逐屏 SCScreenshotManager.captureImage（冻结图）
@@ -76,9 +76,13 @@ start(mode:.region)
   ├─ 拖拽选区 + 8 手柄调整 + 标注
   ├─ Return 确认 / Esc 取消
   ├─ 按屏幕 pixelScale 裁剪 + 拍平
+  ├─ （可选）成品顶部合成 macOS 标准窗口头部（红黄绿圆点，设置可关闭）
   └─ 编码 → 剪贴板 / 自动保存 / Captures 历史 / 声音 / 面板预览
        └─ 面板快捷条：复制 / 保存副本 / 直接设为壁纸（App 组合层调用）
 ```
+
+实际采集失败时只弹恢复框：「打开权限设置 / 重启 Kaiming / 取消」，权限的检测与申请统一在
+设置 → 权限 完成，截图流程不重复展示权限 UI。
 
 关键点：**先截屏，再显示覆盖层**，避免把覆盖层自身拍进画面；同时 `SCContentFilter`
 排除本应用进程，双保险。
@@ -90,10 +94,19 @@ start(mode:.region)
   源码改动仅 5 处 Bundle/import 机械替换，见 [vendor.md](vendor.md)。
 - 服务注入：`HighlightJSBridge`（代码高亮，highlight.js）、`SwiftMathBridge`（LaTeX，SwiftMath）。
 - 资源：`highlight.min.js`、`mathFonts.bundle` 放在 app bundle，`Bundle.main` 读取。
+- 整篇渲染预览（`MarkdownRenderedPreview.swift` + `MarkdownWebDocumentBuilder.swift` +
+  `MarkdownWebPreviewView.swift`）：Markdown → `MarkdownHTMLRenderer` HTML → 自包含 HTML
+  文档 → 系统 `WKWebView` 排版。CSS 采用 GitHub Markdown 风格并跟随系统深浅色；HTML 块
+  仍先 sanitize（去 script/style/iframe/on*）；图片解析后内联为 `data:` URL（离线）；
+  ```mermaid 围栏交给随包的 `mermaid.min.js` 渲染（主题：深色画布 + 青绿 accent）。
+- PDF（`MarkdownPDFExporter.swift`）：离屏 `WKWebView.createPDF` 抓取整篇内容，JS 按块级
+  元素边界计算分页点，再用 CoreGraphics 裁切/缩放到 A4 页面（18mm / 16mm 边距），
+  不依赖预览窗口是否打开。
 
 ## 7. 失败与权限策略
 
-- 截图权限：显式预检 + 空结果判定 + 可操作横幅（绝不静默）。
+- 截图权限：真实 ScreenCaptureKit 能力探测 + 空结果判定；失败时跳转设置 → 权限（唯一入口），
+  菜单栏面板不再显示权限横幅，绝不静默失败。
 - 壁纸设置：文件存在性校验 + 错误提示；不因单屏失败而中断其他屏。
 - 剪贴板：内容不可读时跳过并记录日志，不崩溃。
 - 所有模块的错误都通过 `AppState.flash(_, kind: .error)` 反馈到面板，同时写 `os.Logger`。
@@ -153,3 +166,20 @@ AVQueuePlayer + AVPlayerLooper（静音循环）+ AVPlayerLayer(resizeAspectFill
 状态持久化为 `Application Support/Kaiming/Wallpapers/dynamic-wallpaper.json`（视频路径 + 屏幕集合），
 App 启动时由 `WallpaperManager.init` 延迟恢复；静态壁纸应用到某屏时停止该屏动态壁纸。
 限制：App 必须运行；登录/锁屏不显示；全屏应用会覆盖；逐屏解码有性能成本。
+
+## 11. 菜单栏面板里不能弹系统模态
+
+`MenuBarExtra(.window)` 的窗口在失去 key 时会收起。面板内使用 `.confirmationDialog` / `.alert`
+（以及 `.fileImporter` / `.fileExporter`）时，系统弹窗会抢走 key，面板先被关闭；
+SwiftUI 随即销毁弹窗宿主，弹窗按钮的 action 不再执行。v1.5 的「清空历史」症状
+（点确认后窗口关闭、历史没清空、下次打开仍停在确认页）就是这个原因。
+
+约定：
+
+- 面板内的危险操作一律做成**内联确认**：在原位置把按钮换成确认卡片（说明文案 + 取消/确认），
+  不打开任何新窗口。实现见 `Clipboard/ClipboardPanelView.swift` 的 `clearSection`。
+- 菜单栏面板收起时 SwiftUI 不销毁视图树，`@State` 会保留；只属于本次打开的状态
+  （确认态、输入焦点等）必须在 `onAppear` / `onDisappear` 以及承载窗口
+  `didResignKey` 时复位（`PanelDismissObserver`）。
+- 必须用系统模态时，改用 AppKit 的 `NSAlert` / `NSSavePanel`，以面板窗口为 sheet 锚点；
+  锚不到窗口就不要从面板发起。设置窗口、Markdown 窗口是普通 `Window scene`，不受此限制。

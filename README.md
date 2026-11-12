@@ -7,13 +7,14 @@ Kaiming 是一个 macOS 菜单栏常驻的四合一原生效率工具，用同�
 
 | 模块 | 能力 |
 |---|---|
-| 截图 | 区域 / 窗口 / 全屏三种模式，按屏幕原生像素（4K/Retina）采集；AppKit 覆盖层框选与标注；支持圆角与长截图（默认手动滚动、保留选区边框，可切换自动滚动）；完成后 PNG 自动进剪贴板，并可在面板内一键复制 / 保存 / 设为壁纸 |
+| 截图 | 区域 / 窗口 / 全屏三种模式，按屏幕原生像素（4K/Retina）采集；AppKit 覆盖层框选与标注；支持圆角与长截图（默认手动滚动、保留选区边框，可切换自动滚动）；完成后 PNG 自动进剪贴板，并可在面板内一键复制 / 保存 / 设为壁纸；成品可选 macOS 标准窗口头部（红黄绿三个圆点，默认开启、设置可关闭） |
 | 剪贴板 | 历史记录、类型识别、置顶、一键复制 / 清除；⌥⇧C 打开快捷选择窗口，键盘上下选中、Enter 复制 |
-| 壁纸 | 从剪贴板 / 图片文件设置壁纸；支持视频动态壁纸（桌面层实验方案）；多显示器独立设置，重启后保持；不把截图历史作为壁纸来源 |
-| Markdown | 独立 SwiftUI 窗口，Typora 式实时渲染（TextKit 2）；项目文件夹预览、本地/远程图片、内部文件链接（目录联动）、外部链接卡片、标题大纲导航、HTML 原生渲染预览；图标悬停提示；载入剪贴板 / 打开 / 编辑 / 保存；支持 `kaiming ./docs` 打开目录 |
+| 壁纸 | 从剪贴板或统一文件入口设置壁纸：图片与视频共用「选择壁纸…」，按文件类型自动静态 / 动态应用；多显示器独立设置，重启后保持；不把截图历史作为壁纸来源 |
+| Markdown | 独立 SwiftUI 窗口，Typora 式实时渲染（TextKit 2，GitHub 浅/深色内容主题）；项目文件夹预览与「最近项目」下拉、本地/远程图片、内部文件链接（目录联动）、纯标题大纲导航（点击可滚动定位编辑器/渲染预览）、非 Markdown 文件按类型语法高亮预览；整篇渲染预览改用 WKWebView（GitHub Markdown 样式、HTML 块、Mermaid 图表、跟随系统深浅色），支持页宽（默认/较宽/全宽）、⌘+滚轮缩放字号、导出 A4 PDF；图标悬停提示；编辑 / 保存；支持 `kaiming ./docs` 打开目录 |
 | 应用中心 | 菜单栏「应用」页：已安装应用启动器、最近目录、打开目录；配合 CLI 直接进入 Markdown 文件树 |
 
-纯 Swift 6 + Apple 原生框架，**没有 WebView**，不引入跨平台抽象。
+纯 Swift 6 + Apple 原生框架。编辑器始终是原生 TextKit 2；只有「整篇渲染预览 / PDF 导出」
+使用系统 WKWebView（离线、无外链资源），不引入跨平台抽象。
 
 ![App icon](docs/app-icon-512.png)
 
@@ -94,12 +95,12 @@ open Kaiming.xcodeproj
 
 截图依赖 macOS 的「屏幕录制」TCC 权限：
 
-1. 启动后菜单栏出现取景器图标；未授权时面板顶部显示橙色提示。
-2. 点「请求权限」或「打开系统设置」，在 **系统设置 → 隐私与安全性 → 屏幕录制** 中勾选 Kaiming。
-3. **重新打开 Kaiming** 后生效（TCC 对已运行进程不刷新）。
+1. 启动后菜单栏出现开明兽图标；点面板底部齿轮 → **设置 → 权限**。
+2. 「权限」页统一列出屏幕录制与辅助功能：可检测当前状态、请求权限、打开系统设置、重置授权记录。
+3. 授权后点「重启应用」或重新打开 Kaiming（TCC 对已运行进程不刷新）。
 
-未授权时 ScreenCaptureKit 会**静默返回空列表**，因此 Kaiming 在每次截图前显式预检，
-并在空结果时给出可操作提示，不会静默失败。详见 [docs/permissions.md](docs/permissions.md)。
+未授权时 ScreenCaptureKit 会**静默返回空列表**，因此 Kaiming 以真实采集能力判断权限，
+并在失败时引导到「设置 → 权限」，不会静默失败。详见 [docs/permissions.md](docs/permissions.md)。
 
 ## 快捷键
 
@@ -159,7 +160,7 @@ Kaiming/
   Resources/                # 图标、highlight.js、mathFonts.bundle
 MarkdownKit/                # 内嵌第三方源码（只读，独立 framework）
 Scripts/                    # 构建 / 运行 / 签名 / 公证
-docs/                       # 架构、权限、分发、测试、第三方说明
+docs/                       # 架构、权限、分发、测试、第三方说明；brand/ 为图标源图
 ```
 
 ## 架构与约束
@@ -168,7 +169,7 @@ docs/                       # 架构、权限、分发、测试、第三方说�
 - 模块之间**只通过 `NSPasteboard` 交换数据**；「最近截图」通过 `Application Support/Kaiming/Captures`
   文件目录约定共享，不产生模块类型依赖。
 - 所有剪贴板读写走专用串行队列；壁纸文件不指向临时路径；权限失败必须有可操作提示。
-- UI 框架策略：SwiftUI 为主；AppKit 仅用于截图覆盖层、Carbon 全局快捷键，以及剪贴板/壁纸/图片处理所需的系统 API（NSPasteboard、NSWorkspace、NSImage）。
+- UI 框架策略：SwiftUI 为主；AppKit 用于截图覆盖层、Carbon 全局快捷键、剪贴板/壁纸/图片处理所需的系统 API（NSPasteboard、NSWorkspace、NSImage），以及 Markdown 整篇渲染预览/PDF 导出使用的 WKWebView（WebKit 是系统框架，仅此一处）。
 
 详见 [docs/architecture.md](docs/architecture.md)。
 
@@ -230,6 +231,7 @@ export APP_NOTARY_PASSWORD=xxxx-xxxx-xxxx-xxxx
 | swift-markdown-engine | 0.15.0 | Apache-2.0 |
 | SwiftMath | 1.7.3 | MIT |
 | highlight.js | 随 engine 0.15.0 | BSD-3-Clause |
+| Mermaid | 11.17.2 | MIT |
 
 许可证全文见 [docs/licenses](docs/licenses)。内嵌原因与补丁见 [docs/vendor.md](docs/vendor.md)。
 
@@ -238,18 +240,24 @@ export APP_NOTARY_PASSWORD=xxxx-xxxx-xxxx-xxxx
 - 最低 macOS 14.0；不使用 macOS 26 的 `captureScreenshot` 一次性 API（其非前台 Space 返回 -3811 的已知问题与 14 基线不匹配）。
 - 剪贴板的 `detectedPatterns`（macOS 15.4+）在 SDK 15.2 中不可用，类型识别使用 `changeCount` + pasteboard 类型检查。
 - 屏幕录制授权与构建签名/CDHash 绑定：重新构建后系统设置可能仍显示已授权，但需要重启应用/重置权限。
-  Kaiming 1.1.1 已改为以真实 ScreenCaptureKit 能力为准，并在失败时提供重启/重置入口。
+  Kaiming 1.1.1 已改为以真实 ScreenCaptureKit 能力为准，权限的检测 / 申请 / 重置统一在「设置 → 权限」。
 - 未做开机自启的失败重试；`SMAppService` 在未签名的开发构建上可能拒绝注册，设置页会显示系统错误。
+- Markdown 渲染预览的远程图片保留原始 URL，由 WebView 并行渐进加载（需要网络；离线时远程图不显示，正文与本地图片不受影响）；PDF 导出仍会下载并内联远程图片（有界并发，失败降级为占位文字）。
+- Markdown 渲染预览把 `mermaid.min.js`（约 3.5 MB）与 `highlight.min.js`（约 1 MB）内联进
+  HTML，含图表/代码块的文档每次渲染会增加几 MB 内存与几十毫秒拼接耗时；图片按 20 MB/张
+  上限内联为 `data:` URL，超大图片显示占位提示。PDF 分页按块级元素边界计算，超高单块
+  （例如超过一页的表格）仍可能被行内切分。
 - macOS 14 + `LSUIElement` 下 SwiftUI `Settings` scene 的 `showSettingsWindow:` 会返回 handled
   但不创建窗口（本机实测），因此偏好设置改用独立 `Window(id: "settings")`，功能等价，
   ⌘, 仍可用；这是对规格中「Settings scene」的一处有据可查的工程偏离。
 - 截图按屏幕原生像素采集（本机 4K：3840×2160）；4K 长截图在高上限下内存占用较高。
-- Markdown 的 HTML 块在「渲染预览」中**原生渲染**（MarkdownHTMLRenderer + `NSAttributedString(html:)`，无 WebView），编辑器内仍显示 Markdown 源码；HTML 文档会出现一键预览提示条。HTML 脚本/CSS 不执行、`details` 展开、复杂 HTML 降级。
+- Markdown 的 HTML 块在「渲染预览」中由 **WKWebView** 真实渲染（编辑器内仍显示源码，含 HTML 块时出现一键预览提示条）；预览会先清洗 `<script>`/`<iframe>` 与 `on*` 事件，HTML 自带样式可生效。Mermaid 图固定使用深色画布（参考 Crescent 架构图风格），不随页面浅色主题重绘。
 - 菜单栏是系统材质，视频壁纸启用时用视频首帧 poster 作为系统壁纸来匹配菜单栏背景（静态、不随视频变化）；停止动态壁纸会恢复原壁纸。
 - 视频壁纸是**桌面层窗口**实现（macOS 没有公开 API 把视频设为系统壁纸）：
   Kaiming 必须保持运行，退出即停止；桌面图标保持在视频上层。
 - 长截图默认进入**手动滚动**（保留选区边框，实时页面自行滚动）；点 HUD 的「自动滚动」才需要辅助功能（Accessibility）权限，未授权时保持手动。
-- 壁纸的图片/视频选择使用 AppKit NSOpenPanel，菜单栏 popover 关闭不会取消选择。
+- 壁纸使用单一「选择壁纸…」入口（AppKit NSOpenPanel，同时接受图片与视频），按文件类型自动应用；
+  菜单栏 popover 关闭不会取消选择。
 - 应用中心只扫描 `/Applications`、`/System/Applications`、`~/Applications` 的顶层与二级 `.app`，不索引 Spotlight 全盘应用。
 - 未实现云端同步/多设备历史；所有数据仅本机。
 

@@ -34,14 +34,7 @@ struct MarkdownSidebarView: View {
 
     private var header: some View {
         HStack(spacing: 6) {
-            Image(systemName: "folder")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-
-            Text(tree.rootURL?.lastPathComponent ?? "目录")
-                .font(.system(size: 12, weight: .semibold))
-                .lineLimit(1)
-                .truncationMode(.middle)
+            folderMenu
 
             Spacer(minLength: 4)
 
@@ -50,13 +43,90 @@ struct MarkdownSidebarView: View {
             }
             .disabled(tree.rootURL == nil)
 
-            headerButton("folder.badge.plus", help: "打开项目文件夹…", action: onOpenFolder)
-
             headerButton("sidebar.left", help: "隐藏目录树", action: onClose)
         }
         .padding(.horizontal, 10)
         .frame(height: 36)
         .zIndex(20)
+    }
+
+    /// 目录名即下拉菜单：切换项目文件夹、打开最近项目，或打开新的项目文件夹。
+    private var folderMenu: some View {
+        Menu {
+            folderMenuContent
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: tree.rootURL == nil ? "folder.badge.plus" : "folder")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+
+                Text(tree.rootURL?.lastPathComponent ?? "选择项目文件夹")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: 150, alignment: .leading)
+            }
+            .padding(.horizontal, 4)
+            .frame(height: 22)
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .layoutPriority(1)
+        .markdownTooltip("切换项目文件夹", alignment: .bottomLeading)
+        .accessibilityLabel("项目文件夹：\(tree.rootURL?.lastPathComponent ?? "未打开")")
+    }
+
+    @ViewBuilder
+    private var folderMenuContent: some View {
+        Button {
+            onOpenFolder()
+        } label: {
+            Label("打开项目文件夹…", systemImage: "folder.badge.plus")
+        }
+
+        Divider()
+
+        if tree.recentFolders.isEmpty {
+            Text("暂无最近的项目")
+        } else {
+            Section("最近的项目") {
+                ForEach(tree.recentFolders, id: \.path) { folder in
+                    Button {
+                        tree.open(folder: folder)
+                    } label: {
+                        if isCurrentFolder(folder) {
+                            Label(recentFolderName(folder), systemImage: "checkmark")
+                        } else {
+                            Text(recentFolderName(folder))
+                        }
+                    }
+                }
+            }
+
+            Divider()
+
+            Menu {
+                ForEach(tree.recentFolders, id: \.path) { folder in
+                    Button(recentFolderName(folder)) {
+                        tree.removeRecent(folder)
+                    }
+                }
+            } label: {
+                Label("移除最近项目", systemImage: "trash")
+            }
+        }
+    }
+
+    private func isCurrentFolder(_ folder: URL) -> Bool {
+        guard let rootURL = tree.rootURL else { return false }
+        return rootURL.standardizedFileURL.path == folder.standardizedFileURL.path
+    }
+
+    private func recentFolderName(_ folder: URL) -> String {
+        let name = folder.lastPathComponent
+        return name.isEmpty ? folder.path : name
     }
 
     private func headerButton(
@@ -161,7 +231,9 @@ struct MarkdownSidebarView: View {
             Text("尚未打开项目")
                 .font(.system(size: 12, weight: .medium))
 
-            Text("打开一个文件夹作为项目，即可浏览其中的所有文件。")
+            Text(tree.recentFolders.isEmpty
+                 ? "打开一个文件夹作为项目，即可浏览其中的所有文件。"
+                 : "打开一个文件夹作为项目；也可以从上方文件夹菜单选择最近的项目。")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

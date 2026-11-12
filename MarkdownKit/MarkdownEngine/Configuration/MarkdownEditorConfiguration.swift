@@ -588,10 +588,21 @@ public struct LinkStyle: Sendable {
     /// Foreground alpha applied to "incomplete" link content (e.g. `[text]`
     /// without a target).
     public var incompleteLinkAlpha: CGFloat
+    /// Whether an inactive (not being edited) link draws an underline.
+    ///
+    /// Defaults to `true`, the historical look. GitHub's markdown body draws
+    /// links without an underline until hover, so a GitHub-aligned embedder
+    /// can set this to `false`.
+    public var underlinesLinks: Bool
 
-    public init(activeLinkAlpha: CGFloat = 0.55, incompleteLinkAlpha: CGFloat = 0.7) {
+    public init(
+        activeLinkAlpha: CGFloat = 0.55,
+        incompleteLinkAlpha: CGFloat = 0.7,
+        underlinesLinks: Bool = true
+    ) {
         self.activeLinkAlpha = activeLinkAlpha
         self.incompleteLinkAlpha = incompleteLinkAlpha
+        self.underlinesLinks = underlinesLinks
     }
 
     public static let `default` = LinkStyle()

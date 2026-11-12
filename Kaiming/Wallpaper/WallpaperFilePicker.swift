@@ -14,6 +14,8 @@ final class WallpaperFilePicker {
 
     static let imageContentTypes: [UTType] = [.image]
     static let videoContentTypes: [UTType] = [.movie, .mpeg4Movie, .quickTimeMovie, .video]
+    /// 统一入口：图片与视频放在同一个选择面板里，由调用方按文件类型分别应用。
+    static let wallpaperContentTypes: [UTType] = [.image, .movie, .mpeg4Movie, .quickTimeMovie, .video]
     static let folderContentTypes: [UTType] = [.folder]
 
     private var activePanels: [NSOpenPanel] = []
@@ -23,6 +25,20 @@ final class WallpaperFilePicker {
 
     private init() {}
 
+    /// 统一壁纸入口：一个面板同时接受图片与视频，选中后由 `WallpaperManager.applyWallpaper(from:screenIDs:)`
+    /// 按文件类型自动路由。
+    func chooseWallpaper(completion: @escaping @MainActor ([URL]) -> Void) {
+        present(
+            contentTypes: Self.wallpaperContentTypes,
+            title: "选择壁纸",
+            message: "支持图片（PNG / JPEG / HEIC 等）与视频（MP4 / MOV / M4V），选中后会按文件类型自动应用。",
+            canChooseFiles: true,
+            canChooseDirectories: false,
+            completion: completion
+        )
+    }
+
+    /// 仅图片的快捷入口；统一入口之外保留，便于按类型直接调用。
     func chooseImage(completion: @escaping @MainActor ([URL]) -> Void) {
         present(
             contentTypes: Self.imageContentTypes,
@@ -34,6 +50,7 @@ final class WallpaperFilePicker {
         )
     }
 
+    /// 仅视频的快捷入口；统一入口之外保留，便于按类型直接调用。
     func chooseVideo(completion: @escaping @MainActor ([URL]) -> Void) {
         present(
             contentTypes: Self.videoContentTypes,

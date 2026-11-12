@@ -20,7 +20,7 @@ grep -rn "captureScreenshot" Kaiming --include='*.swift' || true          # 不�
 ## 1. 启动
 
 - [ ] `open build/dd/Build/Products/Debug/Kaiming.app` 后进程存活。
-- [ ] 菜单栏出现取景器图标；Dock 无图标（`LSUIElement`）。
+- [ ] 菜单栏出现开明兽（Mono 线稿）图标；Dock 无图标（`LSUIElement`）。
 - [ ] 启动时**不**自动弹出 Markdown 窗口。
 - [ ] 菜单栏图标点击弹出 400×580 面板，四个 Tab（截图/剪贴板/壁纸/应用）可切换。
 - [ ] 点面板右上 Markdown 图标打开独立窗口；关闭后可再次打开。
@@ -38,9 +38,10 @@ APP=build/dd/Build/Products/Debug/Kaiming.app
 # --snapshot-fake-capture 用合成图片填充“刚截取的画面”快捷条，便于无 TCC 权限时验收
 "$APP/Contents/MacOS/Kaiming" --snapshot-clipboard-picker /tmp/picker.png
 "$APP/Contents/MacOS/Kaiming" --snapshot-markdown /tmp/markdown.png
-"$APP/Contents/MacOS/Kaiming" --snapshot-settings /tmp/settings.png
+"$APP/Contents/MacOS/Kaiming" --snapshot-settings /tmp/settings.png [--snapshot-settings-tab general|permissions|screenshot|clipboard|markdown|shortcuts|about]
 "$APP/Contents/MacOS/Kaiming" --capture-test full      # 真实全屏截图（本次覆盖不复制，不改持久化设置）
 "$APP/Contents/MacOS/Kaiming" --capture-test full --capture-test-copy  # 显式验证截图→剪贴板链路
+"$APP/Contents/MacOS/Kaiming" --capture-test full --capture-test-decorate  # 显式验证「成品带窗口头部」链路
 ```
 
 `--snapshot-*` 在进程内用真实 `NSWindow + NSHostingView` 渲染，不依赖屏幕录制权限。
@@ -52,14 +53,18 @@ lsappinfo list | grep -A3 Kaiming      # 应显示 type="UIElement"
 log show --info --debug --last 5m --predicate 'subsystem == "com.kaiming.app"' --style compact
 ```
 
-## 2. 屏幕录制权限
+## 2. 权限（统一入口）
 
-- [ ] 未授权时：面板顶部橙色横幅，截图入口给出明确提示，不静默。
-- [ ] 点「请求权限」出现系统流程；「打开系统设置」跳到 隐私与安全性 → 屏幕录制。
-- [ ] 授权后**重启应用**，横幅消失，截图可用。
-- [ ] 撤销权限（`tccutil reset ScreenCapture com.kaiming.app`）后重启，横幅重新出现。
+- [ ] 权限只在 **设置 → 权限** 展示：屏幕录制 + 辅助功能两项，各含状态、用途、未授权后果。
+- [ ] 菜单栏面板不再出现权限横幅；截图失败恢复框只有「打开权限设置 / 重启 Kaiming / 取消」。
+- [ ] 截图页 / 长截图页不再有权限状态或「请求权限」按钮，只有跳转「打开权限设置」。
+- [ ] 权限页「检测」：屏幕录制走真实 ScreenCaptureKit 探测；检测期间显示进度，完成后状态更新。
+- [ ] 权限页「请求权限」触发系统流程；「打开系统设置」跳到 隐私与安全性 → 对应权限页。
+- [ ] 权限页「重置授权记录…」清除屏幕录制 TCC 记录并提示重新授权 + 重启（唯一重置入口）。
+- [ ] 授权后**重启应用**（权限页「重启应用」），权限页状态变绿，截图可用。
+- [ ] 撤销权限（`tccutil reset ScreenCapture com.kaiming.app`）后重启，权限页显示未授权，截图不静默。
 - [ ] 已授权但 `CGPreflightScreenCaptureAccess()` 返回 false 时，截图仍按真实 SCK 结果工作（不再假阳性拦截）。
-- [ ] 实际 SCK 失败时弹出恢复面板：重启应用 / 打开系统设置 / 取消；设置页「重置屏幕录制权限…」可清除旧 TCC 记录。
+- [ ] `--snapshot-settings ... --snapshot-settings-tab permissions` 渲染出完整权限页，不溢出。
 
 ## 3. 截图
 
@@ -87,6 +92,15 @@ log show --info --debug --last 5m --predicate 'subsystem == "com.kaiming.app"' -
 - [ ] 快捷条：复制到剪贴板、保存副本到截图文件夹、直接设为壁纸、收起；四个动作都有成功/失败提示。
 - [ ] 连续快速触发不会叠加多套覆盖层。
 
+### 成品窗口头部（默认开启）
+
+- [ ] 设置 → 截图 → 外观 →「截图成品带窗口头部圆点」默认开启。
+- [ ] 区域截图成品顶部有一条 28pt 窗口头部与红黄绿三个圆点；浅色内容配浅色头部、深色内容配深色头部。
+- [ ] 剪贴板、自动保存文件、`Captures/` 历史三者是同一张带头部的图片。
+- [ ] 带圆角 + 标注时，圆角作用于「头部 + 内容」整体外框，标注位置不偏移。
+- [ ] 窗口截图不重复叠加头部（原图已含标题栏）。
+- [ ] 关闭开关后，成品宽度不变、高度恢复原生像素（本机 3840×2160），与改动前一致。
+
 ## 4. 剪贴板
 
 - [ ] 复制一段文本 → 面板历史出现新记录，类型为文本。
@@ -95,6 +109,11 @@ log show --info --debug --last 5m --predicate 'subsystem == "com.kaiming.app"' -
 - [ ] 相同内容连续复制不重复入栈。
 - [ ] 置顶项在超过上限后仍保留；取消置顶后恢复淘汰规则。
 - [ ] 删除单项同时删除对应图片文件；清空历史后列表为空。
+- [ ] 面板「清空历史」：点击后在原位出现内联确认卡片（不弹系统弹窗、面板不关闭）。
+- [ ] 点「清空历史」确认：计数归零、显示「暂无历史记录」、图片文件被删除，顶部出现「已清空全部历史记录」提示。
+- [ ] 点「取消」或 Esc：历史保留，回到普通「清空历史」按钮。
+- [ ] 打开面板 → 点「清空历史」→ 不确认直接收起面板 → 再次打开：不得停留在确认卡片。
+- [ ] 设置页「清空全部历史记录」仍可清空（普通窗口，允许系统确认弹窗）。
 - [ ] 关闭「监控剪贴板变化」后不再新增；重新开启后恢复。
 - [ ] 在面板点复制不会产生重复历史（自身写入被基线跳过）。
 - [ ] 并发压测：快速 pbcopy 循环时无崩溃（串行队列生效）。
@@ -103,8 +122,12 @@ log show --info --debug --last 5m --predicate 'subsystem == "com.kaiming.app"' -
 
 - [ ] 面板列出所有显示器、主屏标记正确。
 - [ ] 从剪贴板设置壁纸：桌面立即变化；文件出现在 `Application Support/Kaiming/Wallpapers/`。
+- [ ] 壁纸页只有一个「选择壁纸…」入口，不再有「图片/视频」分段控件或两个独立按钮。
+- [ ] 同一入口选择图片 → 设为静态壁纸；选择视频（MP4/MOV/M4V）→ 设为动态壁纸；按文件类型自动路由。
+- [ ] 选择不支持的文件 → 面板提示「不支持的文件类型」，不写入文件、不改变壁纸。
 - [ ] 从图片文件设置：源文件删除后壁纸仍保持（已复制持久化）。
-- [ ] 壁纸页不展示「最近截图」；来源只有剪贴板/选择图片/视频。
+- [ ] 动态壁纸播放中再选择图片：对应屏幕停止动态壁纸并恢复静态壁纸。
+- [ ] 壁纸页不展示「最近截图」；来源只有剪贴板（图片）/统一文件入口。
 - [ ] 多显示器：只勾选副屏时只改副屏。
 - [ ] 退出并重启应用、再重启 Mac 后壁纸仍保持。
 - [ ] 无剪贴板图片/坏图片时给出错误提示，不崩溃。
@@ -114,7 +137,6 @@ log show --info --debug --last 5m --predicate 'subsystem == "com.kaiming.app"' -
 - [ ] 从面板打开 Markdown 窗口，欢迎文档正常渲染（标题、列表、代码块、表格、公式）。
 - [ ] 输入 `**粗体**`、`# 标题` 等，光标离开后实时渲染；光标进入元素显示源码。
 - [ ] 代码块有语法高亮；`$E=mc^2$` / `$$...$$` 公式渲染。
-- [ ] 「从剪贴板载入」把剪贴板文本放入编辑器（不覆盖未保存内容时不提示视为缺陷）。
 - [ ] 打开本地 `.md` 成功；保存并重新打开内容一致。
 - [ ] 未命名文档保存时弹出保存面板，扩展名 `.md`。
 - [ ] 复制按钮把 Markdown 源码放回剪贴板。
@@ -123,12 +145,20 @@ log show --info --debug --last 5m --predicate 'subsystem == "com.kaiming.app"' -
 - [ ] 超长文档滚动/输入无明显卡顿。
 - [ ] 本地图片（相对/绝对路径）、远程图片渲染；缺失图片保留源码。
 - [ ] 内部链接（相对 .md/文本/图片）在应用内打开；外部 http(s) 浏览器打开。
-- [ ] 富内容 inspector：外链卡片标题/域名/描述、HTML 块原生渲染（非源码）；无 WebView。
+- [ ] 内容导航只显示标题大纲（无链接卡片/HTML 预览/刷新按钮）；点击标题时编辑器滚动到对应位置，渲染预览打开时预览滚动到对应标题并短暂高亮。
+- [ ] 表格单元格内的行内代码/加粗/链接正确渲染（不出现反引号源码）。
+- [ ] 编辑器与渲染预览内容区不显示滚动条，但滚轮/触控板仍可滚动。
+- [ ] 项目树里的 .swift/.ts/.json/.yaml/.sh 等文件预览按类型语法高亮；未知类型仍为纯文本；超过 256KB 不高亮。
 - [ ] 开 inspector 时编辑/脏文档保护/保存不回归。
-- [ ] 工具栏图标 hover 260ms 显示文字提示（新建/保存/打开文件夹/预览等全部）。
+- [ ] 工具栏不再有「从剪贴板载入 / 打开 Markdown 文件 / 打开项目文件夹」按钮；hover 260ms 显示文字提示。
+- [ ] 项目文件夹下拉显示最近项目，可切换与移除；重启后最近列表保留。
+- [ ] 页宽在默认/较宽/全宽间切换生效；内容区 ⌘+滚轮缩放字号并持久化。
 - [ ] 点击内部链接打开新文档后，侧栏展开其父目录、其他目录收起；项目外文件只打开不改树。
 - [ ] 右侧内容导航显示标题大纲，点击滚动到对应标题。
-- [ ] 含 HTML 的文档出现一键「渲染预览」；HTML `<img>` 相对/绝对/http 图片可见，不显示原始标签。
+- [ ] 含 HTML 的文档出现一键「渲染预览」；HTML 块由 WebView 渲染，`<img>` 相对/绝对/http 图片可见，不显示原始标签。
+- [ ] 渲染预览支持 Mermaid 流程图/时序图；错误语法显示错误并保留源码。
+- [ ] 远程图片（shields 徽章、Star 趋势 SVG）在预览中渐进加载；本地 HTML 块数量超过 10 时后续块仍按 HTML 渲染（不再被转义）。
+- [ ] 渲染预览中导出 PDF：A4、分页不截断正文行、含图表与代码高亮。
 - [ ] 渲染预览只读，切回编辑不丢未保存内容。
 
 ## 7. 快捷键与设置

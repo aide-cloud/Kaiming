@@ -38,7 +38,8 @@ xcodebuild -project Kaiming.xcodeproj -scheme Kaiming -configuration Debug \
 ## 3. 全局技术约束（来自项目规格）
 
 1. Swift 6 语言模式，macOS 14.0 部署目标；SwiftUI 为主，AppKit 仅用于截图覆盖层与 Carbon 快捷键。
-2. 禁止 WebView；Markdown 用原生 TextKit 2 渲染。
+2. 编辑器用原生 TextKit 2 渲染；WebView 仅允许用于 Markdown 整篇渲染预览与 PDF 导出
+   （系统 WKWebView，内容自包含、不联网；不引入第三方 WebView 或跨平台抽象）。
 3. 截图必须用 `SCScreenshotManager.captureImage`（ScreenCaptureKit，macOS 14+）；不得用旧 API，不做 macOS 26 专属 API。
 4. 所有 `NSPasteboard` 读写串行化到专用 `DispatchQueue`，禁止并发。
 5. 壁纸/截图历史文件必须持久化到 `AppPaths` 下，不得指向临时目录。
@@ -74,6 +75,7 @@ enum ScreenCapturePermission {
     static let shared: SettingsStore
     // 截图：copyScreenshotToClipboard / playCaptureSound / captureCursor
     //       screenshotFormat / autoSaveScreenshots / screenshotSaveDirectoryPath
+    //       成品外观：screenshotImageWindowHeader（默认 true，设置可关闭）
     //       screenshotSaveDirectory: URL
     // 剪贴板：clipboardMonitoringEnabled / clipboardHistoryLimit / clipboardPollInterval
     // 快捷键：hotkeysEnabled
@@ -102,6 +104,11 @@ enum ScreenCapturePermission {
     // 快捷键动作固定：⌥⇧S 区域 / ⌥⇧W 窗口 / ⌥⇧F 全屏 / ⌥⇧M Markdown
     // 快捷键回调路径：HotKeyManager → ScreenshotCoordinator.shared.start(mode:) / AppRouter.openMarkdown()
 }
+
+enum SettingsTab { case general, permissions, screenshot, clipboard, markdown, shortcuts, about }
+@MainActor final class SettingsRoute: ObservableObject { static let shared; func request(_:); func consume() -> SettingsTab? }
+// 权限唯一应用层入口，见第 23 节
+@MainActor final class PermissionCenter: ObservableObject { static let shared /* … */ }
 ```
 
 ## 5. 模块必须提供的公开入口
@@ -169,9 +176,13 @@ struct ScreenInfo: Identifiable, Equatable {
     func setWallpaper(image: NSImage, screenIDs: Set<String>)
     func setWallpaper(fileURL: URL, screenIDs: Set<String>)
     func setFromPasteboard(screenIDs: Set<String>)
+    // v1.7 统一入口：图片 / 视频按类型自动路由，见第 22 节
+    func applyWallpaper(from url: URL, screenIDs: Set<String>)
 }
 struct WallpaperPanelView: View
 ```
+
+文件选择统一走 `WallpaperFilePicker.shared.chooseWallpaper`（同时接受图片与视频）。
 
 失败（无权限、图片不可读等）用 `AppState.shared.flash("…", kind: .error)` 明确提示，不要静默。
 
@@ -185,6 +196,30 @@ struct MarkdownWindowView: View   // 整个独立窗口内容；KaimingApp 已�
 渲染库入口：`import MarkdownEngine` 后使用 `NativeTextViewWrapper(text:fontSize:documentId:)`；
 代码高亮用 `HighlightJSBridge()`、LaTeX 用 `SwiftMathBridge()`（与本框架同一 module）。
 `SettingsView` 已读取 `settings.markdownFontSize`、`markdownLivePreview`，请至少使用 `markdownFontSize`。
+
+整篇渲染预览 / PDF 的冻结入口（`Kaiming/Markdown/`）：
+
+```swift
+@MainActor enum MarkdownRenderedPreviewBuilder {
+    static func build(markdown: String, baseURL: URL?, configuration: MarkdownEditorConfiguration) async -> MarkdownRenderedDocument
+    static func build(markdown: String, baseURL: URL?, configuration: MarkdownEditorConfiguration,
+                      options: MarkdownWebDocumentOptions) async -> MarkdownRenderedDocument
+}
+
+struct MarkdownRenderedPreviewView: View {
+    init(document: MarkdownRenderedDocument, sourceName: String,
+         onRefresh: @escaping () -> Void, onClose: @escaping () -> Void,
+         baseURL: URL? = nil, pageWidth: MarkdownPageWidth = .standard,
+         fontSize: CGFloat = 14, onExportPDF: (() -> Void)? = nil)
+}
+
+@MainActor enum MarkdownPDFExporter {
+    static func makePDF(markdown: String, baseURL: URL?, configuration: MarkdownEditorConfiguration,
+                        title: String = "文档", fileName: String? = nil) async throws -> Result
+    static func exportInteractively(markdown: String, baseURL: URL?, configuration: MarkdownEditorConfiguration,
+                                    fileName: String? = nil, presentingWindow: NSWindow? = nil) async throws -> URL?
+}
+```
 
 ## 6. 截图 ↔ 壁纸的「截图历史」约定
 
@@ -304,6 +339,8 @@ Kaiming --capture-test full [--capture-test-copy]
 - `SCDisplay.width/height` 是点；使用 `SCContentFilter.pointPixelScale` 与
   `CGDisplayMode.pixelWidth/Height` 计算目标像素，`captureResolution = .best`、`scalesToFit = false`。
 - 全屏/区域冻结图/长截图逐帧/窗口截图共用像素尺寸策略；标注拍平保持底图像素尺寸。
+- 开启「成品带窗口头部」后，成品宽度不变、高度 = 原生高度 + 头部高度（28pt × 像素密度）；
+  关闭后与改动前完全一致。`--capture-test` 默认不叠加头部，保持原生像素尺寸校验。
 
 ## 18. 壁纸来源
 - 壁纸 UI 不再展示/扫描 `AppPaths.captures`；来源仅剪贴板图片、用户选择图片、视频、轮换文件夹。
@@ -312,4 +349,91 @@ Kaiming --capture-test full [--capture-test-copy]
 - `MarkdownImageProvider`：本地相对/绝对/file URL 与 http(s) 图片。
 - `MarkdownLinkRouter`：相对文件路径点击在应用内打开（md→编辑器，文本/图片→预览），外部 URL 系统打开。
 - `MarkdownKit` 第 6 条补丁：`onWebLinkClick` + 相对路径不再强制 https；升级需重放。
-- 外链卡片/HTML 块在右侧 inspector 原生渲染；HTML 脚本/CSS、远程 img 不执行。
+- 右侧 inspector 只保留标题大纲导航，不再渲染外链卡片/HTML 块；整篇渲染预览改为 WKWebView：GitHub Markdown CSS、HTML 块真实渲染（先清洗 script/iframe/on*）、Mermaid 图表、A4 PDF 导出。
+
+# v1.5 扩展契约
+
+## 20. 截图成品窗口头部
+
+- 新增共享设置 `SettingsStore.screenshotImageWindowHeader`（键 `kaiming.screenshot.imageWindowHeader`，
+  默认 `true`）。设置 → 截图 → 外观 →「截图成品带窗口头部圆点」直接读写，关闭后立即生效。
+- `Screenshot/WindowHeaderDecoration.swift` 负责绘制：28pt 高、12pt 圆点、8pt 间距、左侧 13pt 缩进，
+  按截图像素密度换算；头部背景按截图内容平均亮度自适应深/浅，与内容观感一致。
+- 合成位置：
+  - 区域 / 长截图：在 `AnnotationDrawing.render` 内先画内容与标注、再画头部，
+    最后对「头部 + 内容」整体外框做圆角裁剪（`cornerRadius` 语义不变）。
+  - 全屏截图：`ScreenshotCoordinator` 在 `completeCapture` 前调用 `WindowHeaderDecoration.decorate`。
+  - 窗口截图：原图已含系统标题栏，不重复叠加。
+- 成品尺寸：宽度不变，高度增加头部高度；剪贴板、自动保存、截图历史与面板预览使用同一张成品图。
+- 关闭开关后不得改变任何既有截图像素/圆角/标注行为；`--capture-test` 默认跳过头部，
+  `--capture-test-decorate` 可显式开启用于人工验收。
+
+# v1.6 扩展契约
+
+## 21. 菜单栏面板内的确认与弹窗
+
+- 面板内容运行在 `MenuBarExtra(.window)` 里，**禁止**在面板内使用 `.confirmationDialog`、
+  `.alert`、`.fileImporter` / `.fileExporter` 等系统弹窗：它们会抢走面板的 key 状态，面板被收起，
+  且弹窗按钮的 action 在视图销毁后不执行（v1.5「清空历史」点确认后窗口关闭、历史未清空的根因）。
+- 危险操作改为面板内内联确认：原位置切换为确认卡片 +「取消」/「确认」按钮，不打开新窗口。
+- 面板收起时 SwiftUI 不销毁视图树，`@State` 会保留；本次打开才有效的临时状态（确认态等）
+  必须在 `onAppear` / `onDisappear` / 承载窗口失 key 时复位
+  （参考 `Clipboard/ClipboardPanelView.swift` 的 `PanelDismissObserver`）。
+- 确实需要系统模态时用 AppKit `NSAlert` / `NSSavePanel`，以面板窗口为 sheet 锚点；
+  锚不到窗口时不从面板发起。设置 / Markdown 是普通 `Window scene`，不受此约束。
+- `ClipboardPanelView` 的公开形态保持无参 `View`；`ClipboardManager.clearHistory()` 签名不变。
+
+# v1.7 扩展契约
+
+## 22. 壁纸统一入口（图片 / 视频不再区分）
+
+- 壁纸页只有一个文件入口「选择壁纸…」：`WallpaperFilePicker.chooseWallpaper(completion:)` 用
+  `wallpaperContentTypes`（`image` + `movie` / `mpeg4Movie` / `quickTimeMovie` / `video`）打开同一个
+  AppKit `NSOpenPanel`；面板内**不得**再出现「图片 / 视频」分段控件或两个独立的选择按钮。
+- 选中文件后统一交给 `WallpaperManager.applyWallpaper(from:screenIDs:)` 路由：
+  - 视频（`.movie` / `.video`，或扩展名 mp4 / mov / m4v）→ `startDynamicWallpaper(fileURL:screenIDs:)`；
+  - 图片（`.image`）→ `setWallpaper(fileURL:screenIDs:)`；
+  - 其他 → `AppState.flash("不支持的文件类型…", kind: .error)`，不写入任何文件。
+- 媒体类型判定集中在 `Wallpaper/WallpaperMedia.swift` 的 `WallpaperContentKind.kind(for:)`
+  （优先 `UTType`，扩展名兜底）。剪贴板来源仍只读图片；若剪贴板里是视频文件 URL，也按同一路由设为动态壁纸。
+- 已冻结入口 `setWallpaper(fileURL:screenIDs:)`、`startDynamicWallpaper(fileURL:screenIDs:)`、
+  `WallpaperPanelView` 无参形态、`WallpaperFilePicker.chooseImage/chooseVideo` 签名保持不变（可保留为内部兼容）。
+- 动态壁纸卡片只在 `manager.isDynamicWallpaperActive` 为真时显示，不再依赖任何「媒体类型」UI 状态。
+
+## 23. 权限统一入口
+
+权限的展示、检测、申请、跳转系统设置**只允许**出现在设置 → 权限页。共享类型由 Lead 维护：
+
+```swift
+enum KaimingPermission: String, CaseIterable, Identifiable, Sendable {
+    case screenRecording, accessibility
+    // title / symbolName / purpose / consequence / requiresRelaunch / systemSettingsURL
+}
+
+struct PermissionStatus: Equatable, Sendable { var isGranted: Bool; var checkedAt: Date? }
+
+@MainActor final class PermissionCenter: ObservableObject {
+    static let shared
+    func status(for permission: KaimingPermission) -> PermissionStatus
+    var grantedCount: Int
+    var allGranted: Bool
+    @Published private(set) var isDetecting: Bool
+    func refresh()            // preflight / AXIsProcessTrusted 同步刷新，不弹系统框
+    func detectAll()          // 屏幕录制走真实 ScreenCaptureKit 探测；辅助功能读 AXIsProcessTrusted
+    @discardableResult func request(_ permission: KaimingPermission) -> Bool
+    func openSystemSettings(_ permission: KaimingPermission)
+    @discardableResult func resetScreenRecording() -> Bool
+}
+```
+
+- `SettingsTab` 与 `SettingsRoute` 在 `Shared/SettingsRoute.swift`；`SettingsTab` 含 `.permissions`「权限」。
+  `AppRouter.shared.openSettings(tab: .permissions)` 先登记再打开设置窗口，`SettingsView` 在
+  `onAppear` / `onChange` 中消费 `SettingsRoute.shared.pendingTab`。
+- 设置「权限」页是唯一展示权限清单与状态的地方，每项必须提供：状态（检测中 / 已授权 / 未授权）、
+  检测、请求权限、打开系统设置；屏幕录制额外提供「重置授权记录…」与「重启应用」。
+- 菜单栏面板**删除**权限横幅；截图失败恢复框、长截图 HUD 等只提示并跳转
+  `AppRouter.shared.openSettings(tab: .permissions)`，**不得**直接调用
+  `CGRequestScreenCaptureAccess()` / `AXIsProcessTrustedWithOptions()`，也不得复制权限列表文案。
+- `AppState.screenRecordingGranted` / `permissionProbeFinished` 保留为 `PermissionCenter` 的只读镜像，
+  供既有调用点读取；新代码直接观察 `PermissionCenter.shared`。
+- 测试钩子：`--snapshot-settings <png> --snapshot-settings-tab permissions` 渲染权限页快照。

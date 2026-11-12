@@ -44,6 +44,12 @@ final class AppRouter {
         settingsHandler()
     }
 
+    /// 打开设置并定位到指定分类（权限失败提示、权限中心等使用）。
+    func openSettings(tab: SettingsTab) {
+        SettingsRoute.shared.request(tab)
+        openSettings()
+    }
+
     func capture(_ mode: CaptureMode) {
         guard let captureHandler else {
             Log.app.error("Capture handler not registered yet; ignoring \(mode.rawValue, privacy: .public)")

@@ -15,7 +15,6 @@ struct MarkdownWindowView: View {
     @ObservedObject private var openRequest = MarkdownOpenRequest.shared
     @ObservedObject private var folderTree = MarkdownFolderTree.shared
     @ObservedObject private var imageProvider = MarkdownImageProvider.shared
-    @StateObject private var linkStore = MarkdownLinkPreviewStore()
 
     @AppStorage("kaiming.markdown.sidebar.showsAllFiles") private var showsAllFiles = true
 
@@ -31,9 +30,9 @@ struct MarkdownWindowView: View {
     @State private var preview: MarkdownPreview?
     @State private var isInspectorVisible = true
     @State private var headings: [MarkdownHeading] = []
-    @State private var htmlPreviews: [MarkdownHTMLPreview] = []
     @State private var inspectorRefreshTask: Task<Void, Never>?
     @State private var scrollRequest: MarkdownScrollRequest?
+    @State private var webScrollRequest: MarkdownWebScrollRequest?
     @State private var isRenderedPreviewVisible = false
     @State private var renderedDocument = MarkdownRenderedDocument()
     @State private var renderedPreviewTask: Task<Void, Never>?
@@ -86,12 +85,18 @@ struct MarkdownWindowView: View {
             }
         }
         .frame(minWidth: 900, minHeight: 480)
-        .background(Color(nsColor: .textBackgroundColor))
+        .background(Color(nsColor: MarkdownGitHubTheme.canvas))
         .background(
             WindowChromeConfigurator(
                 title: "\(model.displayName) — Kaiming",
                 isDocumentEdited: model.isDirty
             )
+            .frame(width: 0, height: 0)
+        )
+        .background(
+            MarkdownScrollZoomMonitor { step in
+                adjustFontSize(by: Double(step))
+            }
             .frame(width: 0, height: 0)
         )
         .animation(.easeInOut(duration: 0.16), value: model.status?.id)
@@ -174,6 +179,8 @@ struct MarkdownWindowView: View {
         .onChange(of: folderTree.rootURL) { _, rootURL in
             if rootURL != nil {
                 isSidebarVisible = true
+                closePreview()
+                showsAllFiles = true
             }
             syncReferenceBase()
             scheduleInspectorRefresh(immediate: true)
@@ -240,12 +247,8 @@ struct MarkdownWindowView: View {
 
             if isInspectorVisible {
                 MarkdownInspectorView(
-                    linkStore: linkStore,
                     headings: headings,
-                    htmlPreviews: htmlPreviews,
                     onSelectHeading: { selectHeading($0) },
-                    onOpenRenderedPreview: { openRenderedPreview() },
-                    onRefresh: { refreshRichContent(forceLinkRefresh: true) },
                     onClose: {
                         isInspectorVisible = false
                         inspectorRefreshTask?.cancel()
@@ -262,9 +265,16 @@ struct MarkdownWindowView: View {
         preview == nil && !isRenderedPreviewVisible
     }
 
+    /// 页宽设置：默认/较宽给出居中的内容栏，全宽铺满。
+    private var contentMaxWidth: CGFloat? {
+        settings.markdownPageWidth.maxContentWidth
+    }
+
     private var editorArea: some View {
         ZStack {
             editor
+                .frame(maxWidth: contentMaxWidth)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .opacity(showEditor ? 1 : 0)
                 .allowsHitTesting(showEditor)
 
@@ -281,8 +291,14 @@ struct MarkdownWindowView: View {
                     document: renderedDocument,
                     sourceName: model.displayName,
                     onRefresh: { loadRenderedPreview() },
-                    onClose: closeRenderedPreview
+                    onClose: closeRenderedPreview,
+                    baseURL: referenceBaseURL,
+                    pageWidth: settings.markdownPageWidth,
+                    fontSize: bodyFontSize,
+                    onExportPDF: { exportPDF() },
+                    scrollRequest: webScrollRequest
                 )
+                .frame(maxWidth: contentMaxWidth)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -331,15 +347,6 @@ struct MarkdownWindowView: View {
             }
             .keyboardShortcut("n", modifiers: .command)
 
-            toolbarButton("doc.on.clipboard", help: "从剪贴板载入文本") {
-                request(.loadClipboard)
-            }
-
-            toolbarButton("folder", help: "打开 Markdown 文件（⌘O）") {
-                request(.openFile)
-            }
-            .keyboardShortcut("o", modifiers: .command)
-
             toolbarButton("square.and.arrow.down", help: "保存（⌘S）") {
                 save()
             }
@@ -347,14 +354,6 @@ struct MarkdownWindowView: View {
 
             toolbarButton("doc.on.doc", help: "复制全文到剪贴板") {
                 copyAllToClipboard()
-            }
-
-            toolbarButton("folder.badge.plus", help: "打开文件夹…") {
-                beginImport(.folder)
-            }
-
-            toolbarButton("folder.badge.gearshape", help: "打开项目文件夹…") {
-                beginImport(.projectFolder)
             }
 
             toolbarButton(
@@ -368,7 +367,7 @@ struct MarkdownWindowView: View {
 
             toolbarButton(
                 "sidebar.right",
-                help: isInspectorVisible ? "隐藏内容导航" : "显示内容导航（大纲 / 链接卡片 / HTML）",
+                help: isInspectorVisible ? "隐藏内容导航" : "显示内容导航（标题大纲）",
                 isActive: isInspectorVisible,
                 tooltipAlignment: .bottomTrailing
             ) {
@@ -382,6 +381,14 @@ struct MarkdownWindowView: View {
                 tooltipAlignment: .bottomTrailing
             ) {
                 toggleRenderedPreview()
+            }
+
+            toolbarDivider
+
+            pageWidthMenu
+
+            toolbarButton("arrow.down.doc", help: "导出为 PDF…", tooltipAlignment: .bottomTrailing) {
+                exportPDF()
             }
 
             toolbarDivider
@@ -401,6 +408,32 @@ struct MarkdownWindowView: View {
         .frame(height: 40)
         .background(.bar)
         .zIndex(20)
+    }
+
+    private var pageWidthMenu: some View {
+        Menu {
+            ForEach(MarkdownPageWidth.allCases) { width in
+                Button {
+                    settings.markdownPageWidth = width
+                } label: {
+                    if settings.markdownPageWidth == width {
+                        Label(width.title, systemImage: "checkmark")
+                    } else {
+                        Text(width.title)
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "arrow.left.and.right.square")
+                .font(.system(size: 13, weight: .regular))
+                .frame(width: 26, height: 24)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .markdownTooltip("页宽：默认 / 较宽 / 全宽", alignment: .bottomTrailing)
+        .accessibilityLabel("页宽")
     }
 
     private var fileSummary: some View {
@@ -634,17 +667,9 @@ struct MarkdownWindowView: View {
         }
     }
 
-    private func refreshRichContent(forceLinkRefresh: Bool = false) {
+    private func refreshRichContent() {
         guard isInspectorVisible else { return }
-        let baseURL = referenceBaseURL
         headings = MarkdownOutlineParser.headings(in: model.text)
-        let blocks = MarkdownRichTextParser.htmlBlocks(in: model.text)
-        htmlPreviews = blocks.map { MarkdownHTMLPreviewRenderer.render(block: $0, baseURL: baseURL) }
-        let links = MarkdownRichTextParser.externalLinks(in: model.text)
-        linkStore.update(urls: links)
-        if forceLinkRefresh {
-            linkStore.refresh()
-        }
     }
 
     // MARK: - 渲染预览 / 大纲
@@ -685,11 +710,20 @@ struct MarkdownWindowView: View {
         let markdown = model.text
         let baseURL = referenceBaseURL
         let configuration = model.configuration
+        let options = MarkdownWebDocumentOptions(
+            title: model.displayName,
+            theme: .system,
+            pageWidth: settings.markdownPageWidth,
+            fontSize: bodyFontSize,
+            // 预览不为远程图片阻塞：保留 https URL 交给 WKWebView 并行渐进加载。
+            inlineRemoteImages: false
+        )
         renderedPreviewTask = Task { @MainActor in
             let document = await MarkdownRenderedPreviewBuilder.build(
                 markdown: markdown,
                 baseURL: baseURL,
-                configuration: configuration
+                configuration: configuration,
+                options: options
             )
             guard !Task.isCancelled, isRenderedPreviewVisible else { return }
             renderedDocument = document
@@ -707,6 +741,13 @@ struct MarkdownWindowView: View {
     }
 
     private func selectHeading(_ heading: MarkdownHeading) {
+        // 渲染预览打开时，导航点击应滚动预览里的标题锚点，而不是把预览关掉。
+        if isRenderedPreviewVisible {
+            if let index = headings.firstIndex(where: { $0.id == heading.id }) {
+                webScrollRequest = MarkdownWebScrollRequest(headingIndex: index)
+            }
+            return
+        }
         closePreview()
         closeRenderedPreview()
         isEditorFocused = true
@@ -904,6 +945,32 @@ struct MarkdownWindowView: View {
                 return
             }
             model.replaceWithClipboardText(contents)
+        }
+    }
+
+    private func exportPDF() {
+        let markdown = model.text
+        guard !markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            model.showStatus("没有可导出的内容", kind: .info)
+            return
+        }
+        let baseURL = referenceBaseURL
+        let configuration = model.configuration
+        let fileName = model.displayName
+        Task { @MainActor in
+            do {
+                if let url = try await MarkdownPDFExporter.exportInteractively(
+                    markdown: markdown,
+                    baseURL: baseURL,
+                    configuration: configuration,
+                    fileName: fileName,
+                    presentingWindow: NSApp.keyWindow
+                ) {
+                    model.showStatus("已导出 PDF：\(url.lastPathComponent)", kind: .success)
+                }
+            } catch {
+                model.presentError("导出 PDF 失败：\(error.localizedDescription)")
+            }
         }
     }
 

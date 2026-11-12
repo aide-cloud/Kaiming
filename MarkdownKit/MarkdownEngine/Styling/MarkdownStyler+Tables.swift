@@ -59,12 +59,20 @@ extension MarkdownStyler {
     private static let themeKeyLock = NSLock()
     private static var themeKeyCache: [String: String] = [:]
 
+    /// Stable identity token for an optional theme color (nil = "no override").
+    private static func colorIdentity(_ color: NSColor?) -> String {
+        color.map { "\(ObjectIdentifier($0))" } ?? "nil"
+    }
+
     private static func themeKeyPrefix(ctx: StylingContext, appearance: NSAppearance) -> String {
         let theme = ctx.configuration.theme
         let identity = "\(ctx.baseFont.fontName)|\(ctx.baseFont.pointSize)|\(appearance.name.rawValue)|"
             + "\(ObjectIdentifier(theme.bodyText))|\(ObjectIdentifier(theme.mutedText))|"
+            + "\(ObjectIdentifier(theme.headingText))|\(ObjectIdentifier(theme.blockquoteText))|"
             + "\(ObjectIdentifier(theme.highlightColor))|\(ObjectIdentifier(ctx.codeBackgroundColor))|"
             + "\(ObjectIdentifier(theme.latexLightModeText))|\(ObjectIdentifier(theme.latexDarkModeText))|"
+            + "\(colorIdentity(theme.tableBorder))|\(colorIdentity(theme.tableHeaderBackground))|"
+            + "\(colorIdentity(theme.tableRowStripe))|"
             + "\(ObjectIdentifier(type(of: ctx.services.latex)))"
 
         themeKeyLock.lock()
@@ -83,10 +91,15 @@ extension MarkdownStyler {
             appearance.name.rawValue,
             colorKey(theme.bodyText, under: appearance),
             colorKey(theme.mutedText, under: appearance),
+            colorKey(theme.headingText, under: appearance),
+            colorKey(theme.blockquoteText, under: appearance),
             colorKey(theme.highlightColor, under: appearance),
             colorKey(ctx.codeBackgroundColor, under: appearance),
             colorKey(theme.latexLightModeText, under: appearance),
             colorKey(theme.latexDarkModeText, under: appearance),
+            theme.tableBorder.map { colorKey($0, under: appearance) } ?? "nil",
+            theme.tableHeaderBackground.map { colorKey($0, under: appearance) } ?? "nil",
+            theme.tableRowStripe.map { colorKey($0, under: appearance) } ?? "nil",
             "\(ObjectIdentifier(type(of: ctx.services.latex)))",
         ].joined(separator: "|")
 
@@ -522,14 +535,21 @@ extension MarkdownStyler {
         let cellVPadding: CGFloat = 6
         let borderWidth: CGFloat = 1
         // Resolve under the real appearance: `.withAlphaComponent()` freezes a dynamic color otherwise.
-        func mutedColor(alpha: CGFloat) -> NSColor {
-            var resolved: NSColor = theme.mutedText
+        func resolved(_ color: NSColor) -> NSColor {
+            var output: NSColor = color
             appearance.performAsCurrentDrawingAppearance {
-                resolved = theme.mutedText.usingColorSpace(.sRGB) ?? theme.mutedText
+                output = color.usingColorSpace(.sRGB) ?? color
             }
-            return resolved.withAlphaComponent(alpha)
+            return output
         }
-        let borderColor = mutedColor(alpha: 0.5)
+        func mutedColor(alpha: CGFloat) -> NSColor {
+            resolved(theme.mutedText).withAlphaComponent(alpha)
+        }
+        // Theme overrides win; otherwise keep the historical muted-text tints so
+        // the default look is unchanged.
+        let borderColor = theme.tableBorder.map(resolved) ?? mutedColor(alpha: 0.5)
+        let headerFill = theme.tableHeaderBackground.map(resolved) ?? mutedColor(alpha: 0.08)
+        let stripeFill = theme.tableRowStripe.map(resolved)
         let baseLineHeight: CGFloat = ceil(baseFont.ascender - baseFont.descender + baseFont.leading)
         let minColumnContentWidth: CGFloat = 16
 
@@ -669,10 +689,23 @@ extension MarkdownStyler {
         }
 
         let alignments = table.alignments
-        let headerFill = mutedColor(alpha: 0.08)
 
         // Flipped image so AppKit handles the y-flip; a manual transform mirror would flip glyphs too.
         return NSImage(size: size, flipped: true) { _ in
+            // Zebra striping for even body rows. CSS `nth-child(2n)` counts the
+            // header as child 1, so body row 0 is the first striped row.
+            if let stripeFill {
+                stripeFill.setFill()
+                for rowIdx in 0..<table.rows.count where rowIdx % 2 == 0 {
+                    NSBezierPath(rect: NSRect(
+                        x: borderWidth,
+                        y: rowTop[rowIdx + 1],
+                        width: size.width - 2 * borderWidth,
+                        height: rowContentHeights[rowIdx + 1] + 2 * cellVPadding
+                    )).fill()
+                }
+            }
+
             // Header row fill
             headerFill.setFill()
             NSBezierPath(rect: NSRect(

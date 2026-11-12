@@ -18,6 +18,17 @@ Kaiming 内嵌以下第三方源码/资源。完整许可证文本见 `docs/lice
 - 用途：Markdown 内联/块级 LaTeX 渲染（经 swift-markdown-engine 的 `SwiftMathBridge`）
 - 修改：3 处 `Bundle.module` → `Bundle.main`
 
+## Mermaid 11.17.2
+
+- 上游：https://github.com/mermaid-js/mermaid
+- 版本：11.17.2（UMD / `mermaid.min.js`）
+- 许可：MIT
+- 用途：Markdown 渲染预览中的 ```mermaid 图表离线渲染
+  （`Kaiming/Resources/Markdown/mermaid.min.js`，随 app bundle 分发，不联网）
+- 修改：无；仅拷贝上游 dist 文件
+- 主题：参考 Crescent 的 `mermaid-theme.ts` 风格（深色画布、青绿 accent #13C2C2、
+  节点圆角 7、虚线流动边），通过 `themeVariables` / `themeCSS` 注入，不改动库源码
+
 ## highlight.js
 
 - 上游：https://highlightjs.org

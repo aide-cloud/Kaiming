@@ -82,7 +82,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 ScreenshotCoordinator.shared.startForTesting(
                     mode: mode,
                     copyToClipboard: copyToClipboard,
-                    playSound: false
+                    playSound: false,
+                    addsWindowHeader: ProcessInfo.processInfo.arguments
+                        .contains("--capture-test-decorate")
                 )
             }
         }
@@ -140,6 +142,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if let index = args.firstIndex(of: "--snapshot-settings"), index + 1 < args.count {
             let path = args[index + 1]
+            if let tabIndex = args.firstIndex(of: "--snapshot-settings-tab"),
+               tabIndex + 1 < args.count,
+               let tab = SettingsTab(rawValue: args[tabIndex + 1]) {
+                SettingsRoute.shared.request(tab)
+            }
             let root = AnyView(
                 SettingsView()
                     .environmentObject(SettingsStore.shared)
@@ -266,7 +273,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !defaults.bool(forKey: key) else { return }
         defaults.set(true, forKey: key)
 
-        let granted = ScreenCapturePermission.request()
+        let granted = PermissionCenter.shared.request(.screenRecording)
         #if DEBUG
         NSLog("Kaiming debug: automatic permission request granted=\(granted)")
         #endif

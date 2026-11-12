@@ -1,31 +1,16 @@
 import AppKit
 import SwiftUI
-import UniformTypeIdentifiers
-
-/// 壁纸数据源的媒体类型。
-private enum WallpaperMediaKind: String, CaseIterable, Identifiable {
-    case image
-    case video
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .image: "图片"
-        case .video: "视频"
-        }
-    }
-}
 
 /// 菜单栏面板中的「壁纸」页。
 ///
 /// 布局适配 372pt 内容宽（菜单栏面板 400pt 减去左右各 14pt），所有数据源操作都作用于
 /// 上方勾选的屏幕集合；成功 / 失败通过 `AppState.flash` 反馈。
+///
+/// 数据源只有一个统一入口：图片与视频在同一个选择面板里，按文件类型自动应用。
 struct WallpaperPanelView: View {
     @ObservedObject private var manager = WallpaperManager.shared
 
     @State private var selectedScreenIDs: Set<String> = []
-    @State private var mediaKind: WallpaperMediaKind = .image
     @State private var rotationMinutes = 5
     @State private var isRotationExpanded = false
 
@@ -49,9 +34,6 @@ struct WallpaperPanelView: View {
         .frame(maxWidth: panelContentWidth, alignment: .leading)
         .onAppear {
             manager.refreshScreens()
-            if manager.isDynamicWallpaperActive {
-                mediaKind = .video
-            }
             if selectedScreenIDs.isEmpty {
                 selectedScreenIDs = Set(manager.screens.map(\.id))
             }
@@ -62,11 +44,6 @@ struct WallpaperPanelView: View {
                 selectedScreenIDs = available
             } else {
                 selectedScreenIDs.formIntersection(available)
-            }
-        }
-        .onChange(of: manager.isDynamicWallpaperActive) {
-            if manager.isDynamicWallpaperActive {
-                mediaKind = .video
             }
         }
     }
@@ -248,92 +225,52 @@ struct WallpaperPanelView: View {
                 sectionTitle("数据源")
 
                 Spacer(minLength: 0)
-
-                Picker("媒体类型", selection: $mediaKind) {
-                    ForEach(WallpaperMediaKind.allCases) { kind in
-                        Text(kind.title).tag(kind)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width: 116)
-                .disabled(manager.isBusy)
             }
 
-            if mediaKind == .image {
-                imageSourceControls
-            } else {
-                videoSourceControls
-            }
-        }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(cardBackground)
-    }
-
-    private var imageSourceControls: some View {
-        VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
+                Button {
+                    chooseWallpaperFile()
+                } label: {
+                    Label("选择壁纸…", systemImage: "photo.on.rectangle")
+                        .font(.system(size: 11))
+                }
+                .disabled(manager.isBusy || selectedScreenIDs.isEmpty)
+
                 Button {
                     manager.setFromPasteboard(screenIDs: selectedScreenIDs)
                 } label: {
                     Label("从剪贴板", systemImage: "doc.on.clipboard")
                         .font(.system(size: 11))
                 }
-                .disabled(manager.isBusy || selectedScreenIDs.isEmpty)
-
-                Button {
-                    chooseImageFile()
-                } label: {
-                    Label("选择图片…", systemImage: "photo.badge.plus")
-                        .font(.system(size: 11))
-                }
+                .help("读取剪贴板中的图片；复制的视频文件同样可用")
                 .disabled(manager.isBusy || selectedScreenIDs.isEmpty)
 
                 Spacer(minLength: 0)
             }
             .controlSize(.small)
 
-            Text("图片会复制到应用数据目录后再设为壁纸，不引用临时路径。")
-                .font(.system(size: 9))
-                .foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private var videoSourceControls: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Button {
-                    chooseVideoFile()
-                } label: {
-                    Label("选择视频…", systemImage: "film.badge.plus")
-                        .font(.system(size: 11))
-                }
-                .disabled(manager.isBusy || selectedScreenIDs.isEmpty)
-
-                if manager.isDynamicWallpaperActive {
-                    Text("已启用")
-                        .font(.system(size: 9, weight: .semibold))
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(Capsule().fill(Color.purple.opacity(0.15)))
-                        .foregroundStyle(Color.purple)
-                }
-
-                Spacer(minLength: 0)
-            }
-            .controlSize(.small)
-
-            Text("支持 MP4 / MOV，循环静音播放（新视频会替换当前动态壁纸）。macOS 菜单栏只能取系统壁纸，启用时会把视频首帧 poster 设为系统壁纸以匹配菜单栏背景；停止或切换静态壁纸时恢复原壁纸。")
+            Text("图片（PNG / JPEG / HEIC 等）与视频（MP4 / MOV / M4V）共用一个入口，按文件类型自动应用。")
                 .font(.system(size: 9))
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            if let info = manager.dynamicWallpaperInfo, manager.isDynamicWallpaperActive {
+            Text("「从剪贴板」读取剪贴板中的图片；复制的视频文件同样会按文件类型应用。")
+                .font(.system(size: 9))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if manager.isDynamicWallpaperActive, let info = manager.dynamicWallpaperInfo {
+                Text("视频在桌面层循环静音播放，并用首帧 poster 匹配菜单栏背景；停止或切换图片壁纸时恢复原壁纸。")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+
                 dynamicVideoCard(info)
             }
         }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(cardBackground)
     }
 
     private func dynamicVideoCard(_ info: WallpaperVideoInfo) -> some View {
@@ -379,17 +316,10 @@ struct WallpaperPanelView: View {
         return String(format: "%d:%02d", totalSeconds / 60, totalSeconds % 60)
     }
 
-    private func chooseImageFile() {
-        WallpaperFilePicker.shared.chooseImage { urls in
+    private func chooseWallpaperFile() {
+        WallpaperFilePicker.shared.chooseWallpaper { urls in
             guard let url = urls.first else { return }
-            manager.setWallpaper(fileURL: url, screenIDs: selectedScreenIDs)
-        }
-    }
-
-    private func chooseVideoFile() {
-        WallpaperFilePicker.shared.chooseVideo { urls in
-            guard let url = urls.first else { return }
-            manager.startDynamicWallpaper(fileURL: url, screenIDs: selectedScreenIDs)
+            manager.applyWallpaper(from: url, screenIDs: selectedScreenIDs)
         }
     }
 

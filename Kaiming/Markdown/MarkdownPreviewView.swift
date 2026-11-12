@@ -145,10 +145,19 @@ struct MarkdownPreviewView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    @ViewBuilder
     private func textContent(_ text: String, isTruncated: Bool) -> some View {
         VStack(spacing: 0) {
-            MarkdownPlainTextView(text: text)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            Group {
+                if let language = MarkdownCodePreview.language(for: preview.url),
+                   MarkdownCodePreview.shouldHighlight(text, for: preview.url) {
+                    MarkdownCodeTextView(text: text, language: language)
+                        .background(Color(nsColor: MarkdownGitHubTheme.canvas))
+                } else {
+                    MarkdownPlainTextView(text: text)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             if isTruncated {
                 HStack(spacing: 6) {
@@ -231,12 +240,15 @@ struct MarkdownPreviewView: View {
 // MARK: - 纯文本视图
 
 /// 只读、可选择、等宽字体的纯文本视图（不经过 Markdown 引擎）。
+///
+/// 滚动条隐藏（仍可用触控板/滚轮滚动），与代码高亮预览的视觉保持一致。
 struct MarkdownPlainTextView: NSViewRepresentable {
     let text: String
 
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSTextView.scrollableTextView()
-        scrollView.hasVerticalScroller = true
+        scrollView.hasVerticalScroller = false
+        scrollView.hasHorizontalScroller = false
         scrollView.drawsBackground = false
         scrollView.autohidesScrollers = true
 

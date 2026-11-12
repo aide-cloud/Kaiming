@@ -1,0 +1,237 @@
+import AppKit
+import SwiftUI
+import WebKit
+
+/// WKWebView 承载整篇 Markdown 预览。
+///
+/// - HTML 由 ``MarkdownWebDocumentBuilder`` 生成，自包含（图片是 `data:` URL），
+///   用 `loadHTMLString` 直接加载，不写临时文件、不联网。
+/// - 外观跟随系统：CSS 用 `prefers-color-scheme`，WKWebView 会随
+///   `NSApp.effectiveAppearance` 自动切换，无需手动重载。
+/// - 页宽/字号通过 JS 更新 CSS 变量，不重新加载文档（保留滚动位置）。
+/// - 点击链接：页面内锚点放行，其余交给系统默认应用打开。
+/// - `scrollRequest`：一次性滚动到标题锚点；文档尚未加载完成时保存为 pending，
+///   加载完成后自动执行。
+struct MarkdownWebPreviewView: NSViewRepresentable {
+    let html: String
+    var baseURL: URL?
+    var pageWidth: MarkdownPageWidth = .standard
+    var fontSize: CGFloat = 14
+    var scrollRequest: MarkdownWebScrollRequest? = nil
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        configuration.defaultWebpagePreferences.allowsContentJavaScript = true
+        configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
+
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        webView.navigationDelegate = context.coordinator
+        webView.allowsBackForwardNavigationGestures = false
+        webView.allowsMagnification = true
+        webView.underPageBackgroundColor = MarkdownGitHubTheme.canvas
+
+        context.coordinator.attach(webView)
+        context.coordinator.load(
+            html: html,
+            baseURL: baseURL,
+            pageWidth: pageWidth,
+            fontSize: fontSize
+        )
+        context.coordinator.updateScrollRequest(scrollRequest)
+        return webView
+    }
+
+    func updateNSView(_ webView: WKWebView, context: Context) {
+        context.coordinator.load(
+            html: html,
+            baseURL: baseURL,
+            pageWidth: pageWidth,
+            fontSize: fontSize
+        )
+        context.coordinator.updateScrollRequest(scrollRequest)
+    }
+
+    static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
+        webView.stopLoading()
+        webView.navigationDelegate = nil
+    }
+
+    @MainActor
+    final class Coordinator: NSObject {
+        private weak var webView: WKWebView?
+        private var loadedHTML: String?
+        private var loadedBaseURL: URL?
+        private var pendingStyle: (maxWidth: String, fontSize: CGFloat)?
+        private var isDocumentLoaded = false
+        private var pendingScrollRequest: MarkdownWebScrollRequest?
+        private var lastHandledScrollRequestID: UUID?
+        private var readinessProbe: Task<Void, Never>?
+
+        func attach(_ webView: WKWebView) {
+            self.webView = webView
+        }
+
+        func load(html: String, baseURL: URL?, pageWidth: MarkdownPageWidth, fontSize: CGFloat) {
+            guard let webView else { return }
+            let style = (pageWidth.cssMaxWidth, fontSize)
+            if loadedHTML != html || loadedBaseURL != baseURL {
+                loadedHTML = html
+                loadedBaseURL = baseURL
+                pendingStyle = style
+                isDocumentLoaded = false
+                webView.loadHTMLString(html, baseURL: baseURL)
+                startReadinessProbe(webView)
+            } else {
+                pendingStyle = style
+                if isDocumentLoaded {
+                    applyStyle(style)
+                }
+            }
+        }
+
+        /// 幂等：didFinish 之前也可能由就绪探针先触发。
+        func documentDidLoad() {
+            guard !isDocumentLoaded else { return }
+            isDocumentLoaded = true
+            readinessProbe?.cancel()
+            readinessProbe = nil
+            if let pendingStyle {
+                applyStyle(pendingStyle)
+            }
+            applyPendingScrollRequestIfPossible()
+        }
+
+        /// `didFinish` 会等所有子资源（远程图片）结束，图片慢或挂起时，
+        /// 页宽/字号/标题跳转会被拖住。这里轮询运行时就绪（`window.KaimingPreview`
+        /// 由 HTML 末尾的脚本定义），先于 didFinish 恢复交互；didFinish 仍是兜底。
+        private func startReadinessProbe(_ webView: WKWebView) {
+            readinessProbe?.cancel()
+            readinessProbe = Task { @MainActor [weak self, weak webView] in
+                for _ in 0..<120 {
+                    try? await Task.sleep(nanoseconds: 250_000_000)
+                    if Task.isCancelled { return }
+                    guard let self, let webView, !self.isDocumentLoaded else { return }
+                    let ready: Bool = await withCheckedContinuation { continuation in
+                        webView.evaluateJavaScript("!!window.KaimingPreview") { value, _ in
+                            continuation.resume(returning: (value as? Bool) ?? false)
+                        }
+                    }
+                    if ready {
+                        self.documentDidLoad()
+                        return
+                    }
+                }
+            }
+        }
+
+        /// 每次点击内容导航都会带来新的 UUID；同一个 request 只执行一次。
+        func updateScrollRequest(_ request: MarkdownWebScrollRequest?) {
+            guard let request else { return }
+            guard request.id != lastHandledScrollRequestID else { return }
+            pendingScrollRequest = request
+            applyPendingScrollRequestIfPossible()
+        }
+
+        private func applyPendingScrollRequestIfPossible() {
+            guard isDocumentLoaded,
+                  let webView,
+                  let request = pendingScrollRequest else { return }
+            guard request.id != lastHandledScrollRequestID else {
+                pendingScrollRequest = nil
+                return
+            }
+            guard let js = Self.scrollScript(for: request.headingID) else {
+                // 非法 id 直接消费掉，避免反复尝试。
+                lastHandledScrollRequestID = request.id
+                pendingScrollRequest = nil
+                return
+            }
+            lastHandledScrollRequestID = request.id
+            pendingScrollRequest = nil
+            webView.evaluateJavaScript(js) { _, _ in }
+        }
+
+        private static func scrollScript(for headingID: String) -> String? {
+            // 只允许生成的锚点字符，避免把外部字符串拼进 JS。
+            let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
+            guard !headingID.isEmpty,
+                  headingID.unicodeScalars.allSatisfy({ allowed.contains($0) }) else {
+                return nil
+            }
+            return """
+            (function () {
+              if (window.KaimingPreview) {
+                return window.KaimingPreview.scrollToHeading('\(headingID)');
+              }
+              var element = document.getElementById('\(headingID)');
+              if (!element) { return false; }
+              element.scrollIntoView({ block: 'start', inline: 'nearest', behavior: 'auto' });
+              return true;
+            })();
+            """
+        }
+
+        private func applyStyle(_ style: (maxWidth: String, fontSize: CGFloat)) {
+            guard let webView, isDocumentLoaded else { return }
+            let maxWidth = style.maxWidth
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "'", with: "\\'")
+            let js = """
+            if (window.KaimingPreview) {
+              window.KaimingPreview.applyStyle('\(maxWidth)', \(Double(style.fontSize)));
+            }
+            true;
+            """
+            // 这里刻意用 completion 版本：WebKit 的 async 版本在 JS 返回 undefined 时
+            // 会把 nil 隐式解包成 Any 并崩溃（快照模式 exit 133）。返回值忽略即可。
+            webView.evaluateJavaScript(js) { _, _ in }
+        }
+    }
+}
+
+// MARK: - 导航与链接
+
+extension MarkdownWebPreviewView.Coordinator: WKNavigationDelegate {
+    nonisolated func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        MainActor.assumeIsolated {
+            self.documentDidLoad()
+        }
+    }
+
+    nonisolated func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationAction: WKNavigationAction,
+        decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void
+    ) {
+        // WKNavigationAction 只在主线程可读；是否放行/外开在这里同步决定。
+        MainActor.assumeIsolated {
+            guard navigationAction.navigationType == .linkActivated,
+                  let url = navigationAction.request.url else {
+                decisionHandler(.allow)
+                return
+            }
+            // 页面内锚点（#标题）继续由 WebView 自己滚动。
+            if url.absoluteString.hasPrefix("#") {
+                decisionHandler(.allow)
+                return
+            }
+            decisionHandler(.cancel)
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    nonisolated func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationResponse: WKNavigationResponse,
+        decisionHandler: @escaping @MainActor (WKNavigationResponsePolicy) -> Void
+    ) {
+        MainActor.assumeIsolated {
+            decisionHandler(.allow)
+        }
+    }
+}

@@ -147,12 +147,59 @@ final class MarkdownDocumentModel: ObservableObject {
         var configuration = MarkdownEditorConfiguration.default
         configuration.services = MarkdownEditorServices(
             images: MarkdownImageProvider.shared,
-            syntaxHighlighter: HighlightJSBridge(),
+            // highlight.js already ships GitHub light/dark token colors; only the
+            // hardcoded near-white / near-black block background needs replacing
+            // with Primer's canvas-inset values so code matches the rest of the page.
+            syntaxHighlighter: HighlightJSBridge(
+                lightBackground: MarkdownGitHubTheme.codeBackground,
+                darkBackground: MarkdownGitHubTheme.codeBackground
+            ),
             latex: SwiftMathBridge()
         )
+        configuration.theme = makeGitHubTheme()
+        // GFM `~~strikethrough~~` is opt-in in the engine; Kaiming's Markdown is
+        // GitHub-flavored, and registering it also lights up the context-menu toggle.
+        configuration.extensions = [StrikethroughExtension()]
+        // GitHub draws links as solid blue (not dimmed) with no underline until hover.
+        configuration.link.activeLinkAlpha = 1
+        configuration.link.underlinesLinks = false
+        // 隐藏滚动条（仍可滚轮/触控板滚动；⌘+滚轮缩放在 MarkdownScrollZoomMonitor 里独立处理）。
+        configuration.scrollers = .hidden
         // 给正文留出页面边距，接近 Typora 的纸张观感。
         configuration.textInsets = TextInsets(horizontal: 24, vertical: 20)
         return configuration
+    }
+
+    /// GitHub（Primer）内容配色。所有颜色都用 dynamic `NSColor`，
+    /// 因此系统浅色/深色切换时无需重建配置即可自适应。
+    private static func makeGitHubTheme() -> MarkdownEditorTheme {
+        let light = MarkdownGitHubTheme.light
+        let dark = MarkdownGitHubTheme.dark
+        return MarkdownEditorTheme(
+            bodyText: MarkdownGitHubTheme.dynamic(light: light.text, dark: dark.text),
+            mutedText: MarkdownGitHubTheme.dynamic(light: light.muted, dark: dark.muted),
+            disabledText: MarkdownGitHubTheme.dynamic(light: light.subtle, dark: dark.subtle),
+            headingMarker: MarkdownGitHubTheme.dynamic(light: light.muted, dark: dark.muted),
+            headingText: MarkdownGitHubTheme.dynamic(light: light.text, dark: dark.text),
+            blockquoteText: MarkdownGitHubTheme.dynamic(light: light.quoteText, dark: dark.quoteText),
+            link: MarkdownGitHubTheme.dynamic(light: light.link, dark: dark.link),
+            incompleteLink: MarkdownGitHubTheme.dynamic(light: light.link, dark: dark.link),
+            // GitHub 的搜索/==highlight== 都用 attention 黄，浅色 #fff8c5、深色 #3b2300。
+            findMatchHighlight: MarkdownGitHubTheme.dynamic(light: "#fff8c5", dark: "#3b2300"),
+            findCurrentMatchHighlight: MarkdownGitHubTheme.dynamic(light: "#f8e3a1", dark: "#6b4b0a"),
+            latexLightModeText: MarkdownGitHubTheme.color(light.text),
+            latexDarkModeText: MarkdownGitHubTheme.color(dark.text),
+            strikethroughColor: MarkdownGitHubTheme.dynamic(light: light.text, dark: dark.text),
+            highlightColor: MarkdownGitHubTheme.dynamic(light: "#fff8c5", dark: "#3b2300"),
+            tableBorder: MarkdownGitHubTheme.dynamic(light: light.border, dark: dark.border),
+            tableHeaderBackground: MarkdownGitHubTheme.dynamic(light: light.tableHeader, dark: dark.tableHeader),
+            tableRowStripe: MarkdownGitHubTheme.dynamic(light: light.canvasInset, dark: dark.canvasInset),
+            // Renderer-side decorations: 3pt quote bar and thematic-break rule use
+            // Primer's border color; checked task boxes use the accent blue.
+            blockquoteBar: MarkdownGitHubTheme.dynamic(light: light.border, dark: dark.border),
+            thematicBreak: MarkdownGitHubTheme.dynamic(light: light.border, dark: dark.border),
+            taskCheckboxChecked: MarkdownGitHubTheme.dynamic(light: light.accent, dark: dark.accent)
+        )
     }
 
     private static let welcomeDocument = #"""

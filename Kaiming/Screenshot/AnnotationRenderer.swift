@@ -76,20 +76,34 @@ enum AnnotationDrawing {
     /// - Parameters:
     ///   - boundsInPoints: 底图对应的点尺寸，标注坐标基于它。
     ///   - cornerRadius: 圆角半径（点）。大于 0 时圆角外透明，需用 PNG 保留 alpha。
-    /// - Returns: 拍平后的位图；没有标注且圆角为 0 时直接返回底图。
+    ///   - addsWindowHeader: 是否在内容上方合成 macOS 标准窗口头部（红黄绿圆点）。
+    ///     头部计入画布高度，圆角同时作用于「头部 + 内容」的整体外框。
+    /// - Returns: 拍平后的位图；没有标注、圆角为 0 且不加头部时直接返回底图。
     static func render(
         baseImage: CGImage,
         annotations: [Annotation],
         boundsInPoints: CGSize,
-        cornerRadius: CGFloat = 0
+        cornerRadius: CGFloat = 0,
+        addsWindowHeader: Bool = false
     ) -> CGImage? {
         let radius = max(0, cornerRadius)
-        guard !annotations.isEmpty || radius > 0 else { return baseImage }
         guard boundsInPoints.width > 0, boundsInPoints.height > 0 else { return baseImage }
 
-        let width = baseImage.width
-        let height = baseImage.height
-        guard width > 0, height > 0 else { return nil }
+        let contentWidth = baseImage.width
+        let contentHeight = baseImage.height
+        guard contentWidth > 0, contentHeight > 0 else { return nil }
+
+        let scaleX = CGFloat(contentWidth) / boundsInPoints.width
+        let scaleY = CGFloat(contentHeight) / boundsInPoints.height
+        let headerStyle = addsWindowHeader
+            ? WindowHeaderDecoration.makeStyle(for: baseImage, scale: (scaleX + scaleY) / 2)
+            : nil
+        let headerHeight = headerStyle?.headerHeight ?? 0
+
+        guard !annotations.isEmpty || radius > 0 || headerHeight > 0 else { return baseImage }
+
+        let width = contentWidth
+        let height = contentHeight + headerHeight
         guard let context = CGContext(
             data: nil,
             width: width,
@@ -104,8 +118,6 @@ enum AnnotationDrawing {
         }
 
         context.interpolationQuality = .high
-        let scaleX = CGFloat(width) / boundsInPoints.width
-        let scaleY = CGFloat(height) / boundsInPoints.height
 
         if radius > 0 {
             // 半径按点换算到像素；context 尚未缩放，所以这里直接用像素半径。
@@ -118,7 +130,12 @@ enum AnnotationDrawing {
             context.clip()
         }
 
-        context.draw(baseImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+        context.draw(
+            baseImage,
+            in: CGRect(x: 0, y: 0, width: contentWidth, height: contentHeight)
+        )
+
+        context.saveGState()
         context.scaleBy(x: scaleX, y: scaleY)
 
         let graphicsContext = NSGraphicsContext(cgContext: context, flipped: false)
@@ -128,6 +145,20 @@ enum AnnotationDrawing {
             draw(annotation: annotation, in: context, origin: .zero)
         }
         NSGraphicsContext.restoreGraphicsState()
+        context.restoreGState()
+
+        if let headerStyle {
+            WindowHeaderDecoration.draw(
+                in: context,
+                headerRect: CGRect(
+                    x: 0,
+                    y: contentHeight,
+                    width: width,
+                    height: headerHeight
+                ),
+                style: headerStyle
+            )
+        }
 
         guard let image = context.makeImage() else {
             Log.screenshot.error("Unable to make flattened annotation image")

@@ -11,23 +11,6 @@ struct MarkdownHTMLBlock: Identifiable, Equatable {
     let range: NSRange
 }
 
-struct MarkdownHTMLPreview: Identifiable {
-    let id: Int
-    let tagName: String
-    let sourceLength: Int
-    let attributedText: NSAttributedString?
-    let errorMessage: String?
-
-    var displayHeight: CGFloat {
-        guard let attributedText else { return 72 }
-        let bounds = attributedText.boundingRect(
-            with: NSSize(width: 292, height: CGFloat.greatestFiniteMagnitude),
-            options: [.usesLineFragmentOrigin, .usesFontLeading]
-        )
-        return min(max(bounds.height + 20, 64), 280)
-    }
-}
-
 enum MarkdownRichTextParser {
     private static let pairedTagRegex = try! NSRegularExpression(
         pattern: #"(?is)<(div|p|details|summary|ul|ol|li|table|thead|tbody|tr|td|th|blockquote|h[1-6]|section|article|figure|figcaption|pre|dl|dt|dd|center)\b[^>]*>.*?</\1\s*>"#
@@ -38,20 +21,15 @@ enum MarkdownRichTextParser {
     private static let voidRegex = try! NSRegularExpression(
         pattern: #"(?is)<(?:img|br|hr)\b[^>]*/?>"#
     )
-    private static let urlRegex = try! NSRegularExpression(
-        pattern: #"(?i)https?://[^\s<>"')\]}]+"#
-    )
     private static let tagNameRegex = try! NSRegularExpression(
         pattern: #"(?is)^<\s*([a-z0-9]+)"#
     )
-    private static let imageLinkRegex = try! NSRegularExpression(
-        pattern: #"(?is)!\[[^\]]*\]\([^)]*\)"#
-    )
-    private static let htmlImageTagRegex = try! NSRegularExpression(
-        pattern: #"(?is)<img\b[^>]*>"#
-    )
 
-    /// 文档中的 HTML 块（限制数量与大小，避免对超长文档做昂贵渲染）。
+    /// 文档中的 HTML 块（限制单块大小与总数量，避免对超长文档做昂贵渲染）。
+    ///
+    /// 上限从 10 提到 64：README 里每个 shields 徽章 `<img>` 都算一个块，
+    /// 旧上限会让排在后面的合法 HTML 块（例如 Star 趋势 `<p>`）被当作
+    /// Markdown 文本转义输出。
     static func htmlBlocks(in text: String) -> [MarkdownHTMLBlock] {
         let ns = text as NSString
         let fullRange = NSRange(location: 0, length: ns.length)
@@ -80,7 +58,7 @@ enum MarkdownRichTextParser {
         var blocks: [MarkdownHTMLBlock] = []
         var occupied: [NSRange] = []
         for candidate in candidates {
-            guard blocks.count < 10 else { break }
+            guard blocks.count < 64 else { break }
             guard !occupied.contains(where: { NSIntersectionRange($0, candidate.range).length > 0 }) else { continue }
             occupied.append(candidate.range)
             blocks.append(
@@ -93,41 +71,6 @@ enum MarkdownRichTextParser {
             )
         }
         return blocks
-    }
-
-    /// 文档中的 http(s) 链接（去重，最多 12 个）。
-    static func externalLinks(in text: String) -> [URL] {
-        let ns = text as NSString
-        let fullRange = NSRange(location: 0, length: ns.length)
-        guard fullRange.length > 0 else { return [] }
-        let codeRanges = fencedCodeRanges(in: ns)
-
-        var imageRanges: [NSRange] = []
-        imageLinkRegex.enumerateMatches(in: text, options: [], range: fullRange) { match, _, _ in
-            if let match { imageRanges.append(match.range) }
-        }
-        htmlImageTagRegex.enumerateMatches(in: text, options: [], range: fullRange) { match, _, _ in
-            if let match { imageRanges.append(match.range) }
-        }
-
-        var seen = Set<String>()
-        var urls: [URL] = []
-        urlRegex.enumerateMatches(in: text, options: [], range: fullRange) { match, _, _ in
-            guard let match, urls.count < 12 else { return }
-            guard !codeRanges.contains(where: { NSIntersectionRange($0, match.range).length > 0 }) else { return }
-            // 图片目标不是“链接卡片”意义上的链接，避免为远程图片生成空卡片。
-            guard !imageRanges.contains(where: { NSIntersectionRange($0, match.range).length > 0 }) else { return }
-
-            var raw = ns.substring(with: match.range)
-            while let last = raw.last, ".,;:!?)]}'\"".contains(last) {
-                raw.removeLast()
-            }
-            guard !raw.isEmpty, let url = URL(string: raw) else { return }
-            let key = url.absoluteString
-            guard seen.insert(key).inserted else { return }
-            urls.append(url)
-        }
-        return urls
     }
 
     // MARK: - 私有
@@ -162,95 +105,6 @@ enum MarkdownRichTextParser {
             ranges.append(NSRange(location: start, length: ns.length - start))
         }
         return ranges
-    }
-}
-
-// MARK: - HTML 原生渲染
-
-enum MarkdownHTMLPreviewRenderer {
-    static func render(block: MarkdownHTMLBlock, baseURL: URL?) -> MarkdownHTMLPreview {
-        let sanitized = sanitize(block.source)
-        guard let data = sanitized.data(using: .utf8) else {
-            return MarkdownHTMLPreview(
-                id: block.id, tagName: block.tagName, sourceLength: block.source.count,
-                attributedText: nil, errorMessage: "无法编码这段 HTML。"
-            )
-        }
-
-        var options: [NSAttributedString.DocumentReadingOptionKey: Any] = [
-            .documentType: NSAttributedString.DocumentType.html,
-            .characterEncoding: String.Encoding.utf8.rawValue
-        ]
-        if let baseURL {
-            options[.baseURL] = baseURL
-        }
-
-        do {
-            let rendered = try NSAttributedString(
-                data: data,
-                options: options,
-                documentAttributes: nil
-            )
-            let normalized = NSMutableAttributedString(attributedString: rendered)
-            normalizeForAppearance(normalized)
-            return MarkdownHTMLPreview(
-                id: block.id, tagName: block.tagName, sourceLength: block.source.count,
-                attributedText: normalized, errorMessage: nil
-            )
-        } catch {
-            return MarkdownHTMLPreview(
-                id: block.id, tagName: block.tagName, sourceLength: block.source.count,
-                attributedText: nil, errorMessage: "HTML 解析失败：\(error.localizedDescription)"
-            )
-        }
-    }
-
-    private static func sanitize(_ html: String) -> String {
-        var result = html
-        for tag in ["script", "style", "iframe", "object", "embed"] {
-            result = result.replacingOccurrences(
-                of: "(?is)<\(tag)\\b[^>]*>.*?</\(tag)\\s*>",
-                with: "",
-                options: .regularExpression
-            )
-        }
-        result = result.replacingOccurrences(
-            of: #"(?i)\son[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)"#,
-            with: "",
-            options: .regularExpression
-        )
-        // 远程图片不走 HTML importer 的同步网络加载；保留可读占位文字。
-        result = result.replacingOccurrences(
-            of: #"(?is)<img\b[^>]*\bsrc\s*=\s*("|')https?://[^"']*\1[^>]*>"#,
-            with: #"<span>[远程图片已省略]</span>"#,
-            options: .regularExpression
-        )
-        return result
-    }
-
-    private static func normalizeForAppearance(_ string: NSMutableAttributedString) {
-        let fullRange = NSRange(location: 0, length: string.length)
-        guard fullRange.length > 0 else { return }
-
-        string.enumerateAttribute(.link, in: fullRange, options: []) { value, range, _ in
-            if value != nil {
-                string.addAttributes(
-                    [
-                        .foregroundColor: NSColor.linkColor,
-                        .underlineStyle: NSUnderlineStyle.single.rawValue
-                    ],
-                    range: range
-                )
-            } else {
-                string.addAttribute(.foregroundColor, value: NSColor.labelColor, range: range)
-            }
-        }
-        string.enumerateAttribute(.font, in: fullRange, options: []) { value, range, _ in
-            if value == nil {
-                string.addAttribute(.font, value: NSFont.systemFont(ofSize: 12), range: range)
-            }
-        }
-        string.addAttribute(.backgroundColor, value: NSColor.clear, range: fullRange)
     }
 }
 

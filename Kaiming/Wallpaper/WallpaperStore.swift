@@ -35,7 +35,8 @@ enum WallpaperStoreError: LocalizedError {
     }
 }
 
-/// 剪贴板读取结果。只携带 `Sendable` 的 `Data` / `URL`，由主线程再解码成 `NSImage`。
+/// 剪贴板读取结果。只携带 `Sendable` 的 `Data` / `URL`，由主线程再解码成 `NSImage`
+/// 或交给统一入口按文件类型路由（`.file` 可能是图片或视频文件）。
 enum WallpaperPasteboardResult: Sendable {
     case image(data: Data, fileExtension: String)
     case file(URL)
@@ -69,25 +70,30 @@ enum WallpaperFileStore {
 
     // MARK: - 剪贴板
 
-    /// 从 `NSPasteboard.general` 读取图片，全部访问都发生在 `WallpaperIO.pasteboard` 队列上。
-    static func readPasteboardImage() async -> WallpaperPasteboardResult {
+    /// 从 `NSPasteboard.general` 读取图片数据，或图片 / 视频文件 URL；
+    /// 全部访问都发生在 `WallpaperIO.pasteboard` 队列上。
+    static func readPasteboardContent() async -> WallpaperPasteboardResult {
         await withCheckedContinuation { (continuation: CheckedContinuation<WallpaperPasteboardResult, Never>) in
             WallpaperIO.pasteboard.async {
-                continuation.resume(returning: readPasteboardImageSync())
+                continuation.resume(returning: readPasteboardContentSync())
             }
         }
     }
 
-    private static func readPasteboardImageSync() -> WallpaperPasteboardResult {
+    private static func readPasteboardContentSync() -> WallpaperPasteboardResult {
         let pasteboard = NSPasteboard.general
 
         let fileOptions: [NSPasteboard.ReadingOptionKey: Any] = [
             .urlReadingFileURLsOnly: true,
-            .urlReadingContentsConformToTypes: [UTType.image.identifier]
+            .urlReadingContentsConformToTypes: [
+                UTType.image.identifier,
+                UTType.movie.identifier,
+                UTType.video.identifier
+            ]
         ]
         if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: fileOptions) as? [URL],
-           let imageURL = urls.first(where: isReadableImageFile) {
-            return .file(imageURL)
+           let fileURL = urls.first(where: isReadableWallpaperFile) {
+            return .file(fileURL)
         }
 
         if let pngData = pasteboard.data(forType: .png), imageSource(from: pngData) != nil {
@@ -276,6 +282,12 @@ enum WallpaperFileStore {
     static func isReadableImageFile(_ url: URL) -> Bool {
         guard isRegularFile(url), FileManager.default.isReadableFile(atPath: url.path) else { return false }
         return isImageFile(url)
+    }
+
+    /// 可读取的图片或视频文件，供剪贴板统一入口筛选。
+    static func isReadableWallpaperFile(_ url: URL) -> Bool {
+        guard isRegularFile(url), FileManager.default.isReadableFile(atPath: url.path) else { return false }
+        return WallpaperContentKind.kind(for: url) != nil
     }
 
     private static func isRegularFile(_ url: URL) -> Bool {

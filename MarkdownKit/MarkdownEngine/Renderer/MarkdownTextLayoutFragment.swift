@@ -624,7 +624,7 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
         let nsContext = NSGraphicsContext(cgContext: context, flipped: true)
         NSGraphicsContext.current = nsContext
 
-        let ruleColor = theme.strikethroughColor.withAlphaComponent(0.4)
+        let ruleColor = theme.thematicBreak ?? theme.strikethroughColor.withAlphaComponent(0.4)
         for decoration in decorations {
             guard let mark = decoration.mark else {
                 ruleColor.setFill()
@@ -663,7 +663,9 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
         defer { NSGraphicsContext.restoreGraphicsState() }
         let nsContext = NSGraphicsContext(cgContext: context, flipped: true)
         NSGraphicsContext.current = nsContext
-        theme.mutedText.withAlphaComponent(0.5).setFill()
+        // Theme override wins; otherwise keep the historical muted-text bar.
+        // Resolved at draw time so a dynamic color still follows the appearance.
+        (theme.blockquoteBar ?? theme.mutedText.withAlphaComponent(0.5)).setFill()
 
         let fragLocation = fragmentNSRange?.location ?? 0
         let leftEdge = point.x - layoutFragmentFrame.origin.x
@@ -830,7 +832,9 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
             if let baseSymbol = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)
                 ?? NSImage(systemSymbolName: fallbackName, accessibilityDescription: nil) {
                 let sizeConfig = NSImage.SymbolConfiguration(pointSize: iconRect.height, weight: .regular)
-                let tint = isChecked ? configuration.theme.bodyText : configuration.theme.mutedText
+                let tint = isChecked
+                    ? (configuration.theme.taskCheckboxChecked ?? configuration.theme.bodyText)
+                    : configuration.theme.mutedText
                 let colorConfig = NSImage.SymbolConfiguration(hierarchicalColor: tint)
                 let symbolConfig = sizeConfig.applying(colorConfig)
                 let symbol = baseSymbol.withSymbolConfiguration(symbolConfig) ?? baseSymbol

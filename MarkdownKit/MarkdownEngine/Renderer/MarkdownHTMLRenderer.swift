@@ -101,7 +101,7 @@ public enum MarkdownHTMLRenderer {
             return "<pre>\(escape(ns.substring(with: range).trimmingCharacters(in: .newlines)))</pre>"
 
         case .table(let range):
-            return renderTable(range: range, ns: ns)
+            return renderTable(range: range, ns: ns, env: env)
 
         case .thematicBreak:
             return "<hr>"
@@ -247,14 +247,41 @@ public enum MarkdownHTMLRenderer {
         return lang.isEmpty ? nil : lang
     }
 
-    private static func renderTable(range: NSRange, ns: NSString) -> String {
+    /// GFM table. Cell CONTENT is inline Markdown (a cell is a mini inline
+    /// block: `code`, `**bold**`, links, images, …), so each cell is parsed by
+    /// the same `InlineParser`/`renderInlines` pair used for paragraphs instead
+    /// of being escaped verbatim — otherwise `` `abc` `` rendered its backticks.
+    /// Raw HTML typed in a cell stays text: it has no inline AST node, so the
+    /// escaping in `renderInlines` outputs `&lt;…&gt;`.
+    private static func renderTable(range: NSRange, ns: NSString, env: Env) -> String {
         let raw = ns.substring(with: range)
         guard let parsed = MarkdownStyler.parseTableSource(raw) else {
             return "<pre>\(escape(raw.trimmingCharacters(in: .newlines)))</pre>"
         }
-        let head = parsed.header.map { "<th>\(escape($0))</th>" }.joined()
+
+        func cellHTML(_ source: String) -> String {
+            let cell = source as NSString
+            let inlines = InlineParser.parse(source, registry: env.registry)
+            return renderInlines(inlines, ns: cell, env: env)
+        }
+
+        /// GitHub emits the column's GFM alignment as `style="text-align:…"`.
+        func alignmentAttribute(_ column: Int) -> String {
+            guard column < parsed.alignments.count else { return "" }
+            switch parsed.alignments[column] {
+            case .left:   return ""
+            case .center: return " style=\"text-align:center\""
+            case .right:  return " style=\"text-align:right\""
+            }
+        }
+
+        let head = parsed.header.enumerated().map { column, cell in
+            "<th\(alignmentAttribute(column))>\(cellHTML(cell))</th>"
+        }.joined()
         let body = parsed.rows.map { row in
-            "<tr>" + row.map { "<td>\(escape($0))</td>" }.joined() + "</tr>"
+            "<tr>" + row.enumerated().map { column, cell in
+                "<td\(alignmentAttribute(column))>\(cellHTML(cell))</td>"
+            }.joined() + "</tr>"
         }.joined()
         return "<table><thead><tr>\(head)</tr></thead><tbody>\(body)</tbody></table>"
     }

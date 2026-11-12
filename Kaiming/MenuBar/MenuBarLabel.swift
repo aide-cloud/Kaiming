@@ -7,7 +7,8 @@ struct MenuBarLabel: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        Image(systemName: "viewfinder")
+        Image("MenuBarIcon")
+            .renderingMode(.template)
             .accessibilityLabel("Kaiming")
             .task {
                 registerRouter()

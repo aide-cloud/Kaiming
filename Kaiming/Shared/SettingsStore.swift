@@ -24,12 +24,14 @@ final class SettingsStore: ObservableObject {
         static let screenshotFormat = "kaiming.screenshot.format"
         static let autoSaveScreenshots = "kaiming.screenshot.autoSave"
         static let screenshotSaveDirectory = "kaiming.screenshot.saveDirectory"
+        static let screenshotImageWindowHeader = "kaiming.screenshot.imageWindowHeader"
         static let clipboardMonitoring = "kaiming.clipboard.monitoring"
         static let clipboardHistoryLimit = "kaiming.clipboard.historyLimit"
         static let clipboardPollInterval = "kaiming.clipboard.pollInterval"
         static let hotkeysEnabled = "kaiming.hotkeys.enabled"
         static let markdownFontSize = "kaiming.markdown.fontSize"
         static let markdownLivePreview = "kaiming.markdown.livePreview"
+        static let markdownPageWidth = "kaiming.markdown.pageWidth"
     }
 
     private let defaults: UserDefaults
@@ -68,6 +70,12 @@ final class SettingsStore: ObservableObject {
         return URL(fileURLWithPath: screenshotSaveDirectoryPath, isDirectory: true)
     }
 
+    /// 是否在截图成品顶部合成 macOS 标准窗口头部（红黄绿三个圆点）。
+    /// 区域 / 全屏 / 长截图生效；窗口截图本身已含标题栏，不重复叠加。
+    @Published var screenshotImageWindowHeader: Bool {
+        didSet { defaults.set(screenshotImageWindowHeader, forKey: Keys.screenshotImageWindowHeader) }
+    }
+
     // MARK: - 剪贴板
 
     @Published var clipboardMonitoringEnabled: Bool {
@@ -97,6 +105,10 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(markdownLivePreview, forKey: Keys.markdownLivePreview) }
     }
 
+    @Published var markdownPageWidth: MarkdownPageWidth {
+        didSet { defaults.set(markdownPageWidth.rawValue, forKey: Keys.markdownPageWidth) }
+    }
+
     // MARK: - 开机启动（由 SMAppService 真实状态驱动）
 
     @Published private(set) var launchAtLogin = false
@@ -117,6 +129,7 @@ final class SettingsStore: ObservableObject {
         screenshotFormat = ScreenshotFormat(rawValue: formatRaw) ?? .png
         autoSaveScreenshots = bool(Keys.autoSaveScreenshots, default: false)
         screenshotSaveDirectoryPath = defaults.string(forKey: Keys.screenshotSaveDirectory) ?? ""
+        screenshotImageWindowHeader = bool(Keys.screenshotImageWindowHeader, default: true)
 
         clipboardMonitoringEnabled = bool(Keys.clipboardMonitoring, default: true)
         clipboardHistoryLimit = defaults.object(forKey: Keys.clipboardHistoryLimit) as? Int ?? 50
@@ -125,6 +138,8 @@ final class SettingsStore: ObservableObject {
         hotkeysEnabled = bool(Keys.hotkeysEnabled, default: true)
         markdownFontSize = defaults.object(forKey: Keys.markdownFontSize) as? Double ?? 15
         markdownLivePreview = bool(Keys.markdownLivePreview, default: true)
+        let pageWidthRaw = defaults.string(forKey: Keys.markdownPageWidth) ?? MarkdownPageWidth.standard.rawValue
+        markdownPageWidth = MarkdownPageWidth(rawValue: pageWidthRaw) ?? .standard
 
         launchAtLogin = SMAppService.mainApp.status == .enabled
     }
@@ -161,12 +176,14 @@ final class SettingsStore: ObservableObject {
         screenshotFormat = .png
         autoSaveScreenshots = false
         screenshotSaveDirectoryPath = ""
+        screenshotImageWindowHeader = true
         clipboardMonitoringEnabled = true
         clipboardHistoryLimit = 50
         clipboardPollInterval = 0.5
         hotkeysEnabled = true
         markdownFontSize = 15
         markdownLivePreview = true
+        markdownPageWidth = .standard
         Log.app.info("Settings reset to defaults")
     }
 }

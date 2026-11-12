@@ -105,8 +105,46 @@ enum MarkdownEditorScrolling {
         let safeLocation = min(max(0, location), length)
         let range = NSRange(location: safeLocation, length: 0)
         textView.setSelectedRange(range)
-        textView.scrollRangeToVisible(range)
         window.makeFirstResponder(textView)
+
+        // TextKit 2 + 引擎的容器视图会让 NSTextView.scrollRangeToVisible 失效
+        // （选区更新成功但 clip view 停在原处）。直接按布局片段算出目标 Y，
+        // 再滚动 clip view，跳转才可靠。
+        if scrollByLayout(in: textView, to: safeLocation) {
+            return true
+        }
+        textView.scrollRangeToVisible(range)
+        return true
+    }
+
+    /// 用 TextKit 2 布局片段定位字符所在行的 Y，并直接滚动 clip view。
+    private static func scrollByLayout(in textView: NSTextView, to location: Int) -> Bool {
+        guard let scrollView = textView.enclosingScrollView,
+              let textLayoutManager = textView.textLayoutManager,
+              let contentManager = textLayoutManager.textContentManager,
+              let start = contentManager.location(
+                textLayoutManager.documentRange.location,
+                offsetBy: location
+              ) else {
+            return false
+        }
+
+        var fragmentMinY: CGFloat?
+        textLayoutManager.enumerateTextLayoutFragments(from: start, options: [.ensuresLayout]) { fragment in
+            fragmentMinY = fragment.layoutFragmentFrame.minY
+            return false
+        }
+        guard let fragmentMinY else { return false }
+
+        let clipView = scrollView.contentView
+        let documentHeight = scrollView.documentView?.bounds.height ?? 0
+        let maxOffsetY = max(0, documentHeight - clipView.bounds.height)
+        let desiredY = fragmentMinY + textView.textContainerInset.height - 12
+        var origin = clipView.bounds.origin
+        origin.y = min(max(0, desiredY), maxOffsetY)
+        guard abs(origin.y - clipView.bounds.origin.y) > 0.5 else { return true }
+        clipView.scroll(to: origin)
+        scrollView.reflectScrolledClipView(clipView)
         return true
     }
 

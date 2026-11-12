@@ -3,11 +3,17 @@ import SwiftUI
 
 /// 菜单栏面板中的剪贴板页。宽度由父容器（372pt 内容宽）决定。
 /// 所有剪贴板操作都通过 `ClipboardManager`，这里不直接访问 `NSPasteboard`。
+///
+/// 注意：本视图运行在 `MenuBarExtra(.window)` 里，**不要**使用 `.confirmationDialog` /
+/// `.alert` / `.fileImporter` 等系统弹窗：它们会抢走面板的 key 状态，面板被收起，
+/// 且弹窗按钮的 action 在视图销毁后不会执行（macOS 14 实测：点「清空历史」窗口关闭但没清空）。
+/// 危险操作一律做成面板内的内联确认。
 struct ClipboardPanelView: View {
     @ObservedObject private var manager = ClipboardManager.shared
     @EnvironmentObject private var settings: SettingsStore
     @Environment(\.openWindow) private var openWindow
-    @State private var showClearHistoryConfirmation = false
+    /// 内联确认态：只属于本次面板显示，面板收起后必须复位，避免下次打开停在「清空历史」确认页。
+    @State private var isConfirmingClearHistory = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -16,18 +22,23 @@ struct ClipboardPanelView: View {
             clearSection
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .confirmationDialog(
-            "清空全部剪贴板历史？",
-            isPresented: $showClearHistoryConfirmation,
-            titleVisibility: .visible
-        ) {
-            Button("清空历史", role: .destructive) {
-                manager.clearHistory()
+        .onAppear(perform: cancelClearHistoryConfirmation)
+        .onDisappear(perform: cancelClearHistoryConfirmation)
+        .background(
+            // 菜单栏面板收起时 SwiftUI 不会销毁视图树（@State 会保留），
+            // 因此额外监听承载窗口失 key / 关闭，兜底复位内联确认态。
+            PanelDismissObserver(onDismiss: cancelClearHistoryConfirmation)
+                .frame(width: 0, height: 0)
+        )
+        .onChange(of: manager.items.isEmpty) { _, isEmpty in
+            if isEmpty {
+                cancelClearHistoryConfirmation()
             }
-            Button("取消", role: .cancel) {}
-        } message: {
-            Text("将删除全部历史记录（包括置顶项）及其保存的图片文件，此操作不可撤销。")
         }
+    }
+
+    private func cancelClearHistoryConfirmation() {
+        isConfirmingClearHistory = false
     }
 
     // MARK: - 当前剪贴板
@@ -277,16 +288,72 @@ struct ClipboardPanelView: View {
         VStack(spacing: 0) {
             Divider()
                 .padding(.bottom, 10)
-            Button(role: .destructive) {
-                showClearHistoryConfirmation = true
-            } label: {
-                Label("清空历史", systemImage: "trash")
-                    .frame(maxWidth: .infinity)
+
+            if isConfirmingClearHistory {
+                clearHistoryConfirmation
+            } else {
+                Button(role: .destructive) {
+                    isConfirmingClearHistory = true
+                } label: {
+                    Label("清空历史", systemImage: "trash")
+                        .frame(maxWidth: .infinity)
+                }
+                .controlSize(.small)
+                .disabled(manager.items.isEmpty)
+                .help("删除全部历史记录（包括置顶项）")
             }
-            .controlSize(.small)
-            .disabled(manager.items.isEmpty)
-            .help("删除全部历史记录（包括置顶项）")
         }
+    }
+
+    /// 面板内内联确认，替代会被菜单栏窗口吞掉的系统确认弹窗。
+    private var clearHistoryConfirmation: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.red)
+                    .padding(.top, 1)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("清空全部剪贴板历史？")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text("将删除 \(manager.items.count) 条历史记录（包括置顶项）及其保存的图片文件，此操作不可撤销。")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            HStack(spacing: 8) {
+                Spacer(minLength: 0)
+
+                Button("取消") {
+                    isConfirmingClearHistory = false
+                }
+                .controlSize(.small)
+                .keyboardShortcut(.cancelAction)
+
+                Button("清空历史", role: .destructive) {
+                    // 先收起确认态，再清空：即使 clearHistory 触发 notice 重绘，也不会停在确认页。
+                    isConfirmingClearHistory = false
+                    manager.clearHistory()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+                .controlSize(.small)
+            }
+        }
+        .padding(8)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.red.opacity(0.08))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(Color.red.opacity(0.22))
+        )
     }
 
     // MARK: - 工具
@@ -496,6 +563,97 @@ extension ClipboardKind {
         case .fileURLs: return .orange
         case .richText: return .purple
         case .other: return .gray
+        }
+    }
+}
+
+// MARK: - 菜单栏面板收起监听
+
+/// 监听承载本视图的窗口：窗口失 key（菜单栏面板被收起）或被关闭时回调。
+///
+/// 菜单栏面板收起后 SwiftUI 只是把窗口移出屏幕，视图树与 `@State` 都还活着；
+/// 仅靠 `onAppear`/`onDisappear` 不足以复位「本次打开才有效」的临时 UI 状态。
+private struct PanelDismissObserver: NSViewRepresentable {
+    var onDismiss: () -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        context.coordinator.attach(to: view)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.onDismiss = onDismiss
+        context.coordinator.attach(to: nsView)
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.detach()
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onDismiss: onDismiss)
+    }
+
+    @MainActor
+    final class Coordinator {
+        var onDismiss: () -> Void
+
+        private var tokens: [NSObjectProtocol] = []
+        private weak var observedWindow: NSWindow?
+
+        init(onDismiss: @escaping () -> Void) {
+            self.onDismiss = onDismiss
+        }
+
+        /// 视图刚进入层级时 `window` 可能还是 nil；每次更新再试一次，直到绑定到真实窗口。
+        func attach(to view: NSView) {
+            guard observedWindow == nil else { return }
+            DispatchQueue.main.async { [weak self, weak view] in
+                guard let self, let window = view?.window else { return }
+                self.observe(window)
+            }
+        }
+
+        private func observe(_ window: NSWindow) {
+            guard observedWindow !== window else { return }
+            detach()
+            observedWindow = window
+
+            let center = NotificationCenter.default
+            tokens = [
+                center.addObserver(
+                    forName: NSWindow.didResignKeyNotification,
+                    object: window,
+                    queue: .main
+                ) { [weak self] _ in
+                    Task { @MainActor in self?.onDismiss() }
+                },
+                center.addObserver(
+                    forName: NSWindow.willCloseNotification,
+                    object: window,
+                    queue: .main
+                ) { [weak self] _ in
+                    Task { @MainActor in self?.onDismiss() }
+                },
+                // 点击其他应用时菜单栏面板也会收起，但窗口不一定先失 key；应用失活一并兜底。
+                center.addObserver(
+                    forName: NSApplication.didResignActiveNotification,
+                    object: NSApp,
+                    queue: .main
+                ) { [weak self] _ in
+                    Task { @MainActor in self?.onDismiss() }
+                },
+            ]
+        }
+
+        func detach() {
+            let center = NotificationCenter.default
+            for token in tokens {
+                center.removeObserver(token)
+            }
+            tokens.removeAll()
+            observedWindow = nil
         }
     }
 }

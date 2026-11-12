@@ -76,7 +76,7 @@ struct LongCaptureHUD: View {
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.mini)
-                        .help("检查辅助功能权限后切换为 CGEvent 自动滚动，沿用已拼接内容")
+                        .help("在「设置 → 权限」中申请辅助功能权限后，切换为 CGEvent 自动滚动，沿用已拼接内容")
                     }
 
                     Spacer(minLength: 4)

@@ -562,7 +562,10 @@ enum MarkdownASTStyler {
                 guard let match, let url = match.url,
                       !isInCode(match.range, codeRanges),
                       !isInCode(match.range, linkRanges) else { return }
-                attrs.append((match.range, [.link: url]))
+                // Explicit ink as well as the link target: NSTextView's default
+                // `linkTextAttributes` would otherwise paint auto-detected URLs
+                // in the system link color and ignore the configured theme.
+                attrs.append((match.range, [.link: url, .foregroundColor: ctx.theme.link]))
             }
         }
     }
@@ -677,7 +680,9 @@ enum MarkdownASTStyler {
             headingPara.paragraphSpacingBefore = headingFont.pointSize * ctx.config.headings.topSpacingEm(for: level)
             headingPara.paragraphSpacing = ctx.baseParagraphSpacing
             attrs.append((ctx.ns.paragraphRange(for: range), [.paragraphStyle: headingPara]))
-            attrs.append((range, [.font: headingFont]))
+            // Heading ink is theme-driven separately from the marker glyphs: GitHub
+            // keeps headings at body color and lets size/weight carry the hierarchy.
+            attrs.append((range, [.font: headingFont, .foregroundColor: ctx.theme.headingText]))
             for marker in markers {
                 attrs.append((marker, [.foregroundColor: ctx.theme.headingMarker]))
             }
@@ -779,7 +784,7 @@ enum MarkdownASTStyler {
             attrs.append((ctx.ns.paragraphRange(for: tokenRange), [.paragraphStyle: para]))
 
             if contentRange.length > 0 {
-                attrs.append((contentRange, [.foregroundColor: ctx.theme.mutedText]))
+                attrs.append((contentRange, [.foregroundColor: ctx.theme.blockquoteText]))
             }
             if ctx.isActive(tokenRange) {
                 attrs.append((markerRange, [.foregroundColor: ctx.theme.mutedText]))
@@ -955,11 +960,14 @@ enum MarkdownASTStyler {
                     .foregroundColor: ctx.theme.link.withAlphaComponent(ctx.config.link.activeLinkAlpha),
                 ]))
             } else {
-                attrs.append((textRange, [
+                var linkAttrs: [NSAttributedString.Key: Any] = [
                     .link: url,
-                    .underlineStyle: NSUnderlineStyle.single.rawValue,
                     .foregroundColor: ctx.theme.link,
-                ]))
+                ]
+                if ctx.config.link.underlinesLinks {
+                    linkAttrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
+                }
+                attrs.append((textRange, linkAttrs))
             }
         }
         for marker in markers { attrs.append((marker, [.foregroundColor: ctx.theme.mutedText])) }

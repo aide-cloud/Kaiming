@@ -47,41 +47,38 @@ final class AppState: ObservableObject {
     }
 
     @Published var selectedTab: PanelTab = .screenshot
+    /// 屏幕录制权限的镜像状态；唯一来源是 `PermissionCenter`（设置「权限」页读同一份）。
     @Published private(set) var screenRecordingGranted = ScreenCapturePermission.isGranted
-    /// 是否完成过一次真实 SCK 能力探测（完成前不显示“未授权”横幅，避免假阴性闪烁）。
+    /// 是否完成过一次权限检测（完成前不显示“未授权”类提示，避免假阴性闪烁）。
     @Published private(set) var permissionProbeFinished = false
     @Published private(set) var lastCapturedImage: NSImage?
     @Published private(set) var lastCaptureDate: Date?
     @Published var notice: Notice?
 
     private var noticeTask: Task<Void, Never>?
-    private var isProbingPermission = false
+    private var permissionCancellable: AnyCancellable?
 
-    private init() {}
-
-    /// 同步刷新 preflight；若 preflight 为 false，再用真实 SCK 探测一次，避免假阴性。
-    func refreshPermission() {
-        let preflight = ScreenCapturePermission.isGranted
-        if preflight {
-            screenRecordingGranted = true
-            permissionProbeFinished = true
-            return
-        }
-        probePermission()
+    private init() {
+        permissionCancellable = PermissionCenter.shared.$statuses
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    let status = PermissionCenter.shared.status(for: .screenRecording)
+                    self.screenRecordingGranted = status.isGranted
+                    self.permissionProbeFinished = status.checkedAt != nil
+                }
+            }
     }
 
-    /// 真实 SCK 能力探测（不会弹系统授权框，只判断当前构建是否真的能采集）。
+    /// 同步刷新 preflight（不触发采集，面板每次打开/回到前台都能快速更新）。
+    /// 真正的 ScreenCaptureKit 能力检测由 `probePermission()` / 设置 → 权限 的「检测」执行。
+    func refreshPermission() {
+        PermissionCenter.shared.refresh()
+    }
+
+    /// 真实能力探测（不会弹系统授权框，只判断当前构建是否真的能采集）。
     func probePermission() {
-        guard !isProbingPermission else { return }
-        isProbingPermission = true
-        Task { @MainActor [weak self] in
-            let granted = await ScreenCapturePermission.verifyAccess()
-            guard let self else { return }
-            self.isProbingPermission = false
-            self.screenRecordingGranted = granted
-            self.permissionProbeFinished = true
-            Log.app.info("Screen capture probe finished: \(granted, privacy: .public)")
-        }
+        PermissionCenter.shared.detectAll()
     }
 
     /// 截图模块完成后调用，用于面板预览与快捷操作。

@@ -1,7 +1,21 @@
 #!/usr/bin/env python3
-"""Generate Kaiming's AppIcon set.
+"""Generate Kaiming's icon assets from the brand source art.
 
-Design: deep jade squircle + white viewfinder brackets + amber lens.
+Sources (checked in, not shipped in the app bundle):
+  docs/brand/Kaiming-Color-1024.png      full-bleed colour logo (opaque)
+  docs/brand/Kaiming-Mono-Detailed.png   monochrome line-art mark (alpha; menu bar)
+  docs/brand/Kaiming-Mono-Transparent.png solid silhouette (alpha; spare, unused)
+
+Outputs:
+  Kaiming/Resources/Assets.xcassets/AppIcon.appiconset/   10 macOS icon sizes
+  Kaiming/Resources/Assets.xcassets/Logo.imageset/        in-app colour logo
+  Kaiming/Resources/Assets.xcassets/MenuBarIcon.imageset/ menu bar template icon
+  docs/app-icon-512.png                                   README preview
+
+The colour art is full-bleed; macOS 14 app icons carry their own squircle, so we
+apply the same margin/radius the icon used before (84/1024 inset, 190/1024
+radius) and keep the corners transparent.
+
 Run with the bundled Python that ships Pillow:
   /Users/hubiao/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/bin/python3 \
       Scripts/generate_app_icon.py
@@ -9,156 +23,147 @@ Run with the bundled Python that ships Pillow:
 from __future__ import annotations
 
 import json
-import math
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parent.parent
-ASSET_DIR = ROOT / "Kaiming" / "Resources" / "Assets.xcassets" / "AppIcon.appiconset"
+ASSET_DIR = ROOT / "Kaiming" / "Resources" / "Assets.xcassets"
+APPICON_DIR = ASSET_DIR / "AppIcon.appiconset"
+LOGO_DIR = ASSET_DIR / "Logo.imageset"
+MENUBAR_DIR = ASSET_DIR / "MenuBarIcon.imageset"
 PREVIEW = ROOT / "docs" / "app-icon-512.png"
 
+COLOR_MASTER = ROOT / "docs" / "brand" / "Kaiming-Color-1024.png"
+MONO_MASTER = ROOT / "docs" / "brand" / "Kaiming-Mono-Detailed.png"
+
 MASTER = 1024
+# Same squircle geometry as the original hand-drawn icon set.
 MARGIN = 84
 RADIUS = 190
+SUPERSAMPLE = 4
+
+# Menu bar template icons: mark height as a fraction of the canvas. The line-art
+# mark needs the larger 18pt canvas to stay readable in the menu bar.
+MENUBAR_CONTENT_SCALE = 0.90
 
 
-def squircle_mask(size: int, margin: int, radius: int) -> Image.Image:
-    mask = Image.new("L", (size, size), 0)
+def squircle_mask(size: int) -> Image.Image:
+    """Antialiased rounded-rectangle mask scaled to `size`."""
+    big = size * SUPERSAMPLE
+    scale = big / MASTER
+    mask = Image.new("L", (big, big), 0)
     draw = ImageDraw.Draw(mask)
     draw.rounded_rectangle(
-        (margin, margin, size - margin, size - margin),
-        radius=radius,
+        (
+            MARGIN * scale,
+            MARGIN * scale,
+            big - MARGIN * scale,
+            big - MARGIN * scale,
+        ),
+        radius=RADIUS * scale,
         fill=255,
     )
-    return mask
+    return mask.resize((size, size), Image.LANCZOS)
 
 
-def vertical_gradient(size: int, top: tuple[int, int, int], bottom: tuple[int, int, int]) -> Image.Image:
-    grad = Image.new("RGB", (size, size))
-    px = grad.load()
-    for y in range(size):
-        t = y / max(size - 1, 1)
-        eased = t * t * (3 - 2 * t)
-        color = tuple(round(top[i] + (bottom[i] - top[i]) * eased) for i in range(3))
-        for x in range(size):
-            px[x, y] = color
-    return grad
+def masked_color(master: Image.Image, size: int) -> Image.Image:
+    art = master.resize((size, size), Image.LANCZOS)
+    art.putalpha(squircle_mask(size))
+    return art
 
 
-def add_radial_glow(base: Image.Image, center: tuple[int, int], radius: int, color: tuple[int, int, int], strength: float) -> None:
-    glow = Image.new("RGBA", base.size, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(glow)
-    steps = 30
-    for i in range(steps, 0, -1):
-        r = int(radius * i / steps)
-        alpha = int(255 * strength * (1 - i / steps) ** 1.5)
-        draw.ellipse(
-            (center[0] - r, center[1] - r, center[0] + r, center[1] + r),
-            fill=(*color, alpha),
-        )
-    glow = glow.filter(ImageFilter.GaussianBlur(radius // 3))
-    base.alpha_composite(glow)
-
-
-def rounded_line(draw: ImageDraw.ImageDraw, points: list[tuple[int, int]], width: int, fill: tuple[int, int, int, int]) -> None:
-    draw.line(points, fill=fill, width=width, joint="curve")
-    r = width // 2
-    for x, y in (points[0], points[-1]):
-        draw.ellipse((x - r, y - r, x + r, y + r), fill=fill)
-
-
-def build_master() -> Image.Image:
-    size = MASTER
-    base = vertical_gradient(size, (10, 46, 44), (31, 118, 104)).convert("RGBA")
-    add_radial_glow(base, (size // 3, size // 4), 560, (54, 196, 164), 0.42)
-    add_radial_glow(base, (size * 4 // 5, size * 4 // 5), 640, (7, 26, 28), 0.55)
-
-    draw = ImageDraw.Draw(base)
-    cx = cy = size // 2
-
-    # Viewfinder corner brackets
-    bracket = 214
-    thickness = 46
-    offset = 250
-    white = (244, 251, 248, 236)
-    for sx, sy in ((-1, -1), (1, -1), (-1, 1), (1, 1)):
-        x_edge = cx + sx * offset
-        y_edge = cy + sy * offset
-        horizontal = [(x_edge, y_edge), (x_edge - sx * bracket, y_edge)]
-        vertical = [(x_edge, y_edge), (x_edge, y_edge - sy * bracket)]
-        rounded_line(draw, horizontal, thickness, white)
-        rounded_line(draw, vertical, thickness, white)
-
-    # Lens: amber ring + dark pupil + highlight
-    ring_radius = 132
-    ring_width = 30
-    amber = (247, 190, 92, 255)
-    draw.ellipse(
-        (cx - ring_radius, cy - ring_radius, cx + ring_radius, cy + ring_radius),
-        outline=amber,
-        width=ring_width,
+def template_icon(master: Image.Image, size: int) -> Image.Image:
+    """Crop the silhouette to its bounds and centre it on a square canvas."""
+    bbox = master.getchannel("A").getbbox()
+    if bbox is None:
+        raise SystemExit(f"{MONO_MASTER.name}: fully transparent")
+    glyph = master.crop(bbox)
+    content = max(1, round(size * MENUBAR_CONTENT_SCALE))
+    ratio = min(content / glyph.width, content / glyph.height)
+    target = (
+        max(1, round(glyph.width * ratio)),
+        max(1, round(glyph.height * ratio)),
     )
-    pupil_radius = 58
-    draw.ellipse(
-        (cx - pupil_radius, cy - pupil_radius, cx + pupil_radius, cy + pupil_radius),
-        fill=(8, 38, 37, 255),
+    glyph = glyph.resize(target, Image.LANCZOS)
+    canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    canvas.alpha_composite(
+        glyph,
+        ((size - target[0]) // 2, (size - target[1]) // 2),
     )
-    dot = 17
-    draw.ellipse((cx - dot, cy - dot + 6, cx + dot, cy + dot + 6), fill=amber)
+    return canvas
 
-    # A faint inner stroke keeps the squircle crisp on light wallpapers.
-    draw.rounded_rectangle(
-        (MARGIN, MARGIN, size - MARGIN, size - MARGIN),
-        radius=RADIUS,
-        outline=(255, 255, 255, 26),
-        width=3,
+
+def write_imageset(path: Path, entries: list[dict], render_as_template: bool = False) -> None:
+    payload: dict = {"images": entries, "info": {"author": "xcode", "version": 1}}
+    if render_as_template:
+        payload["properties"] = {"template-rendering-intent": "template"}
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "Contents.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
     )
-
-    mask = squircle_mask(size, MARGIN, RADIUS)
-    result = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    result.paste(base, (0, 0), mask)
-    return result
 
 
 def main() -> None:
-    master = build_master()
-    ASSET_DIR.mkdir(parents=True, exist_ok=True)
-    PREVIEW.parent.mkdir(parents=True, exist_ok=True)
+    color = Image.open(COLOR_MASTER).convert("RGBA")
+    mono = Image.open(MONO_MASTER).convert("RGBA")
 
-    sizes = {
-        "icon_16x16.png": 16,
-        "icon_16x16@2x.png": 32,
-        "icon_32x32.png": 32,
-        "icon_32x32@2x.png": 64,
-        "icon_128x128.png": 128,
-        "icon_128x128@2x.png": 256,
-        "icon_256x256.png": 256,
-        "icon_256x256@2x.png": 512,
-        "icon_512x512.png": 512,
-        "icon_512x512@2x.png": 1024,
-    }
-    for name, px in sizes.items():
-        master.resize((px, px), Image.LANCZOS).save(ASSET_DIR / name)
-    master.resize((512, 512), Image.LANCZOS).save(PREVIEW)
-
-    contents = {
-        "images": [
-            {"filename": "icon_16x16.png", "idiom": "mac", "scale": "1x", "size": "16x16"},
-            {"filename": "icon_16x16@2x.png", "idiom": "mac", "scale": "2x", "size": "16x16"},
-            {"filename": "icon_32x32.png", "idiom": "mac", "scale": "1x", "size": "32x32"},
-            {"filename": "icon_32x32@2x.png", "idiom": "mac", "scale": "2x", "size": "32x32"},
-            {"filename": "icon_128x128.png", "idiom": "mac", "scale": "1x", "size": "128x128"},
-            {"filename": "icon_128x128@2x.png", "idiom": "mac", "scale": "2x", "size": "128x128"},
-            {"filename": "icon_256x256.png", "idiom": "mac", "scale": "1x", "size": "256x256"},
-            {"filename": "icon_256x256@2x.png", "idiom": "mac", "scale": "2x", "size": "256x256"},
-            {"filename": "icon_512x512.png", "idiom": "mac", "scale": "1x", "size": "512x512"},
-            {"filename": "icon_512x512@2x.png", "idiom": "mac", "scale": "2x", "size": "512x512"},
+    # --- App icon: the 10 slots Xcode expects on macOS -----------------------
+    appicon_sizes = [
+        ("icon_16x16.png", 16, "16x16", "1x"),
+        ("icon_16x16@2x.png", 32, "16x16", "2x"),
+        ("icon_32x32.png", 32, "32x32", "1x"),
+        ("icon_32x32@2x.png", 64, "32x32", "2x"),
+        ("icon_128x128.png", 128, "128x128", "1x"),
+        ("icon_128x128@2x.png", 256, "128x128", "2x"),
+        ("icon_256x256.png", 256, "256x256", "1x"),
+        ("icon_256x256@2x.png", 512, "256x256", "2x"),
+        ("icon_512x512.png", 512, "512x512", "1x"),
+        ("icon_512x512@2x.png", 1024, "512x512", "2x"),
+    ]
+    APPICON_DIR.mkdir(parents=True, exist_ok=True)
+    for name, px, _, _ in appicon_sizes:
+        masked_color(color, px).save(APPICON_DIR / name)
+    write_imageset(
+        APPICON_DIR,
+        [
+            {"filename": name, "idiom": "mac", "scale": scale, "size": size}
+            for name, _, size, scale in appicon_sizes
         ],
-        "info": {"author": "xcode", "version": 1},
-    }
-    (ASSET_DIR / "Contents.json").write_text(json.dumps(contents, ensure_ascii=False, indent=2) + "\n")
-    print(f"wrote {len(sizes)} icon files to {ASSET_DIR}")
+    )
+
+    # --- In-app colour logo (About pane, menu bar panel header) --------------
+    LOGO_DIR.mkdir(parents=True, exist_ok=True)
+    masked_color(color, 128).save(LOGO_DIR / "logo_128.png")
+    masked_color(color, 256).save(LOGO_DIR / "logo_256.png")
+    write_imageset(
+        LOGO_DIR,
+        [
+            {"filename": "logo_128.png", "idiom": "universal", "scale": "1x"},
+            {"filename": "logo_256.png", "idiom": "universal", "scale": "2x"},
+        ],
+    )
+
+    # --- Menu bar template icon ---------------------------------------------
+    MENUBAR_DIR.mkdir(parents=True, exist_ok=True)
+    template_icon(mono, 18).save(MENUBAR_DIR / "menubar_18.png")
+    template_icon(mono, 36).save(MENUBAR_DIR / "menubar_36.png")
+    write_imageset(
+        MENUBAR_DIR,
+        [
+            {"filename": "menubar_18.png", "idiom": "universal", "scale": "1x"},
+            {"filename": "menubar_36.png", "idiom": "universal", "scale": "2x"},
+        ],
+        render_as_template=True,
+    )
+
+    # --- README preview ------------------------------------------------------
+    PREVIEW.parent.mkdir(parents=True, exist_ok=True)
+    masked_color(color, 512).save(PREVIEW)
+
+    print(f"wrote {len(appicon_sizes)} files to {APPICON_DIR}")
+    print(f"wrote Logo + MenuBarIcon imagesets to {ASSET_DIR}")
     print(f"preview: {PREVIEW}")
 
 

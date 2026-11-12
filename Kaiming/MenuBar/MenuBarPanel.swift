@@ -9,9 +9,6 @@ struct MenuBarPanel: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            if appState.permissionProbeFinished, !appState.screenRecordingGranted, appState.selectedTab == .screenshot {
-                permissionBanner
-            }
             if let notice = appState.notice {
                 noticeBanner(notice)
             }
@@ -31,20 +28,11 @@ struct MenuBarPanel: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [Color.accentColor, Color.accentColor.opacity(0.55)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
+            Image("Logo")
+                .resizable()
+                .interpolation(.high)
                 .frame(width: 32, height: 32)
-                .overlay {
-                    Image(systemName: "viewfinder")
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(.white)
-                }
+                .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 1) {
                 Text("开明")
@@ -72,52 +60,7 @@ struct MenuBarPanel: View {
         .padding(.bottom, 10)
     }
 
-    // MARK: - 权限横幅
-
-    private var permissionBanner: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 13))
-                .foregroundStyle(.orange)
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text("需要屏幕录制权限")
-                    .font(.system(size: 11, weight: .semibold))
-                Text("授权后请重新打开 Kaiming。未授权时截图不会返回任何内容。")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                HStack(spacing: 8) {
-                    Button("请求权限") {
-                        ScreenCapturePermission.request()
-                        appState.refreshPermission()
-                        appState.flash("请在系统设置中勾选 Kaiming，然后重启应用", kind: .info)
-                    }
-                    .controlSize(.small)
-
-                    Button("打开系统设置") {
-                        ScreenCapturePermission.openSystemSettings()
-                    }
-                    .controlSize(.small)
-
-                    Button("重启应用") {
-                        AppRelauncher.relaunch()
-                    }
-                    .controlSize(.small)
-                }
-            }
-
-            Spacer(minLength: 0)
-        }
-        .padding(10)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.orange.opacity(0.12))
-        )
-        .padding(.horizontal, 12)
-        .padding(.bottom, 8)
-    }
+    // MARK: - 轻提示
 
     private func noticeBanner(_ notice: AppState.Notice) -> some View {
         HStack(spacing: 6) {

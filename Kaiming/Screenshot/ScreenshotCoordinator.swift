@@ -15,9 +15,10 @@ final class ScreenshotCoordinator: ObservableObject {
 
     private var activeOverlay: CaptureOverlayController?
 
-    /// 仅测试采集使用：本次运行覆盖剪贴板/声音，不写 UserDefaults。
+    /// 仅测试采集使用：本次运行覆盖剪贴板/声音/窗口头部，不写 UserDefaults。
     private var testClipboardOverride: Bool?
     private var testSoundOverride: Bool?
+    private var testDecorationOverride: Bool?
 
     private init() {}
 
@@ -26,13 +27,21 @@ final class ScreenshotCoordinator: ObservableObject {
     func start(mode: CaptureMode) {
         testClipboardOverride = nil
         testSoundOverride = nil
+        testDecorationOverride = nil
         begin(mode)
     }
 
     /// DEBUG 测试入口：不修改 SettingsStore/UserDefaults，只覆盖本次采集行为。
-    func startForTesting(mode: CaptureMode, copyToClipboard: Bool, playSound: Bool) {
+    /// 默认跳过窗口头部装饰，保持输出为原生像素尺寸，便于尺寸校验。
+    func startForTesting(
+        mode: CaptureMode,
+        copyToClipboard: Bool,
+        playSound: Bool,
+        addsWindowHeader: Bool? = nil
+    ) {
         testClipboardOverride = copyToClipboard
         testSoundOverride = playSound
+        testDecorationOverride = addsWindowHeader ?? false
         begin(mode)
     }
 
@@ -86,6 +95,8 @@ final class ScreenshotCoordinator: ObservableObject {
             return
         }
 
+        let addsWindowHeader = testDecorationOverride ?? settings.screenshotImageWindowHeader
+
         let requestedIDs: [CGDirectDisplayID]
         if mode == .fullScreen {
             guard let id = displayID(for: mouseScreen) else {
@@ -134,14 +145,25 @@ final class ScreenshotCoordinator: ObservableObject {
                 Log.screenshot.info(
                     "Full screen capture from display \(frozen.displayID, privacy: .public)"
                 )
-                completeCapture(image: frozen.image, mode: mode)
+                let output: CGImage
+                if addsWindowHeader,
+                   let decorated = WindowHeaderDecoration.decorate(
+                       frozen.image,
+                       scale: frozen.scale
+                   ) {
+                    output = decorated
+                } else {
+                    output = frozen.image
+                }
+                completeCapture(image: output, mode: mode)
 
             case .region, .window:
                 let controller = CaptureOverlayController(
                     mode: mode == .region ? .region : .window,
                     frozenScreens: frozenScreens,
                     windows: prepared.windows,
-                    initialScreen: mouseScreen
+                    initialScreen: mouseScreen,
+                    addsWindowHeader: addsWindowHeader
                 )
                 controller.onFinish = { [weak self] image in
                     guard let self else { return }
@@ -234,8 +256,9 @@ final class ScreenshotCoordinator: ObservableObject {
 
         testClipboardOverride = nil
         testSoundOverride = nil
+        testDecorationOverride = nil
 
-        // 权限状态可能刚被系统更新，顺手刷新面板横幅。
+        // 权限状态可能刚被系统更新，顺手同步权限中心（唯一状态来源）。
         AppState.shared.refreshPermission()
     }
 
@@ -280,68 +303,32 @@ final class ScreenshotCoordinator: ObservableObject {
         Log.screenshot.error("Capture aborted: \(error.localizedDescription, privacy: .public)")
 
         if let screenshotError = error as? ScreenshotError, screenshotError.isPermissionRelated {
-            // 实际 SCK 失败才视为权限问题：触发系统请求并重新探测能力。
+            // 实际 SCK 失败才视为权限问题：重新探测真实能力，并引导用户到唯一的「权限」页。
             AppState.shared.probePermission()
-            ScreenCapturePermission.request()
             presentPermissionRecoveryAlert()
         }
     }
 
-    /// SCK 实际失败时才弹出：提供一键重启/打开设置，覆盖“系统设置已授权但当前进程未生效”的 TCC 状态。
+    /// SCK 实际失败时才弹出：把用户引导到设置「权限」页统一检测 / 申请 / 重置。
+    /// 这里不再主动触发系统授权框，避免截图流程与设置页出现两套申请入口。
     private func presentPermissionRecoveryAlert() {
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = "屏幕录制权限尚未对当前进程生效"
-        alert.informativeText = """
-        系统设置中可能已显示 Kaiming 已授权，但 TCC 授权通常只对新启动的进程生效，重新构建后也可能绑定到旧签名。
-
-        建议先点“重启 Kaiming”。若仍失败，请在系统设置中移除 Kaiming 后重新添加（设置 → 屏幕录制 → 重置权限）。
-        """
+        alert.messageText = "屏幕录制权限未生效"
+        alert.informativeText = "系统设置中可能已显示 Kaiming 已授权，但 TCC 授权通常只对新启动的进程生效，重新构建后也可能绑定旧签名。请到「设置 → 权限」重新检测、申请或重置屏幕录制权限。"
+        alert.addButton(withTitle: "打开权限设置")
         alert.addButton(withTitle: "重启 Kaiming")
-        alert.addButton(withTitle: "重置权限并重新授权")
-        alert.addButton(withTitle: "打开系统设置")
         alert.addButton(withTitle: "取消")
         alert.icon = NSImage(systemSymbolName: "exclamationmark.shield", accessibilityDescription: nil)
 
         NSApp.activate(ignoringOtherApps: true)
         switch alert.runModal() {
         case .alertFirstButtonReturn:
-            AppRelauncher.relaunch()
+            AppRouter.shared.openSettings(tab: .permissions)
         case .alertSecondButtonReturn:
-            resetPermissionAndRelaunch()
-        case .alertThirdButtonReturn:
-            ScreenCapturePermission.openSystemSettings()
+            AppRelauncher.relaunch()
         default:
             break
-        }
-    }
-
-    /// 清除绑定到旧构建签名的 TCC 记录，重新请求授权，然后自动重启。
-    private func resetPermissionAndRelaunch() {
-        guard ScreenCapturePermission.resetTCCEntry() else {
-            AppState.shared.flash(
-                "自动重置权限失败。请在系统设置 → 屏幕录制中移除 Kaiming 后重新添加，再重启应用。",
-                kind: .error
-            )
-            ScreenCapturePermission.openSystemSettings()
-            return
-        }
-
-        AppState.shared.flash(
-            "已清除旧授权记录。请在系统弹窗中允许屏幕录制；若未出现弹窗，请在系统设置中勾选 Kaiming。",
-            kind: .info
-        )
-        let granted = ScreenCapturePermission.request()
-        if granted {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                AppRelauncher.relaunch()
-            }
-        } else {
-            ScreenCapturePermission.openSystemSettings()
-            AppState.shared.flash(
-                "请勾选 Kaiming 后点击菜单栏面板里的“重启应用”，或重新运行 ./Scripts/run.sh。",
-                kind: .info
-            )
         }
     }
 

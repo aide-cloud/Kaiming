@@ -5,39 +5,7 @@ import SwiftUI
 /// 使用显式分段选择器而不是 `TabView`：在 LSUIElement + 独立 Window scene 中，
 /// `TabView` 的标签栏依赖 Settings scene 的 toolbar，渲染不稳定。
 struct SettingsView: View {
-    enum SettingsTab: String, CaseIterable, Identifiable {
-        case general
-        case screenshot
-        case clipboard
-        case markdown
-        case shortcuts
-        case about
-
-        var id: String { rawValue }
-
-        var title: String {
-            switch self {
-            case .general: "通用"
-            case .screenshot: "截图"
-            case .clipboard: "剪贴板"
-            case .markdown: "Markdown"
-            case .shortcuts: "快捷键"
-            case .about: "关于"
-            }
-        }
-
-        var symbolName: String {
-            switch self {
-            case .general: "gearshape"
-            case .screenshot: "crop"
-            case .clipboard: "doc.on.clipboard"
-            case .markdown: "doc.richtext"
-            case .shortcuts: "command"
-            case .about: "info.circle"
-            }
-        }
-    }
-
+    @ObservedObject private var route = SettingsRoute.shared
     @State private var selectedTab: SettingsTab = .general
 
     var body: some View {
@@ -59,6 +27,7 @@ struct SettingsView: View {
             Group {
                 switch selectedTab {
                 case .general: GeneralSettingsPane()
+                case .permissions: PermissionSettingsPane()
                 case .screenshot: ScreenshotSettingsPane()
                 case .clipboard: ClipboardSettingsPane()
                 case .markdown: MarkdownSettingsPane()
@@ -70,6 +39,19 @@ struct SettingsView: View {
         }
         .frame(width: 580, height: 560)
         .background(Color(nsColor: .windowBackgroundColor))
+        .onAppear {
+            applyPendingRoute()
+        }
+        .onChange(of: route.pendingTab) { _, _ in
+            applyPendingRoute()
+        }
+    }
+
+    /// 消费一次性的设置页跳转请求；`consume()` 会把 pendingTab 置 nil，
+    /// 因此 nil 时直接忽略，避免 onChange 循环。
+    private func applyPendingRoute() {
+        guard let tab = route.consume() else { return }
+        selectedTab = tab
     }
 }
 
@@ -77,9 +59,7 @@ struct SettingsView: View {
 
 private struct GeneralSettingsPane: View {
     @EnvironmentObject private var settings: SettingsStore
-    @EnvironmentObject private var appState: AppState
     @State private var showResetConfirmation = false
-    @State private var showResetPermissionConfirmation = false
 
     var body: some View {
         Form {
@@ -103,55 +83,6 @@ private struct GeneralSettingsPane: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section("屏幕录制权限") {
-                HStack {
-                    if !appState.permissionProbeFinished {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text("正在检测真实权限…")
-                    } else {
-                        Label(
-                            appState.screenRecordingGranted ? "已授权，可正常截图" : "未授权",
-                            systemImage: appState.screenRecordingGranted
-                                ? "checkmark.seal.fill"
-                                : "exclamationmark.triangle.fill"
-                        )
-                        .foregroundStyle(appState.screenRecordingGranted ? .green : .orange)
-                    }
-
-                    Spacer()
-
-                    Button("重新检测") {
-                        appState.probePermission()
-                    }
-                    .controlSize(.small)
-
-                    if appState.permissionProbeFinished, !appState.screenRecordingGranted {
-                        Button("请求权限") {
-                            ScreenCapturePermission.request()
-                            appState.probePermission()
-                        }
-                        .controlSize(.small)
-                        Button("打开系统设置") {
-                            ScreenCapturePermission.openSystemSettings()
-                        }
-                        .controlSize(.small)
-                        Button("重启应用") {
-                            AppRelauncher.relaunch()
-                        }
-                        .controlSize(.small)
-                    }
-                }
-
-                Text("检测以 ScreenCaptureKit 的实际采集能力为准。系统设置可能因重新构建后 TCC 记录绑定旧签名而仍显示“已授权”，此时请重置权限后重新授权。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Button("重置屏幕录制权限…", role: .destructive) {
-                    showResetPermissionConfirmation = true
-                }
-            }
-
             Section("重置") {
                 Button("恢复默认设置…", role: .destructive) {
                     showResetConfirmation = true
@@ -165,24 +96,6 @@ private struct GeneralSettingsPane: View {
                 HotKeyManager.shared.reload()
             }
             Button("取消", role: .cancel) {}
-        }
-        .confirmationDialog(
-            "重置屏幕录制权限？",
-            isPresented: $showResetPermissionConfirmation
-        ) {
-            Button("重置并重新请求", role: .destructive) {
-                if ScreenCapturePermission.resetTCCEntry() {
-                    AppState.shared.flash("已重置屏幕录制权限：请在系统设置中重新勾选 Kaiming，然后重启应用。", kind: .info)
-                    ScreenCapturePermission.request()
-                    ScreenCapturePermission.openSystemSettings()
-                } else {
-                    AppState.shared.flash("重置权限失败，请手动在系统设置中移除 Kaiming 后重新添加。", kind: .error)
-                }
-                appState.probePermission()
-            }
-            Button("取消", role: .cancel) {}
-        } message: {
-            Text("会清除 Kaiming 的屏幕录制授权记录，需要重新授权并重启应用。仅在系统设置显示已授权但仍提示未授权时使用。")
         }
     }
 }
@@ -236,31 +149,21 @@ private struct ScreenshotSettingsPane: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section("长截图（自动滚动）") {
-                HStack {
-                    Label(
-                        AccessibilityPermission.isTrusted ? "辅助功能已授权" : "辅助功能未授权",
-                        systemImage: AccessibilityPermission.isTrusted
-                            ? "checkmark.seal.fill"
-                            : "exclamationmark.triangle.fill"
-                    )
-                    .foregroundStyle(AccessibilityPermission.isTrusted ? .green : .orange)
-
-                    Spacer()
-
-                    if !AccessibilityPermission.isTrusted {
-                        Button("请求权限") {
-                            AccessibilityPermission.prompt()
-                        }
-                        Button("打开系统设置") {
-                            AccessibilityPermission.openSystemSettings()
-                        }
-                    }
-                }
-
-                Text("普通截图不需要该权限；长截图的自动滚动需要辅助功能权限。未授权时可在长截图界面改用手动滚动拼接。")
+            Section("外观") {
+                Toggle("截图成品带窗口头部圆点", isOn: $settings.screenshotImageWindowHeader)
+                Text("在区域 / 全屏 / 长截图成品顶部合成一条 macOS 标准窗口头部（红黄绿三个圆点），剪贴板、保存文件与截图历史都会包含。窗口截图本身已含标题栏，不会重复叠加。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            Section("长截图（自动滚动）") {
+                Text("长截图的自动滚动需要辅助功能权限；普通截图与手动滚动拼接不需要。所有权限的检测、申请与设置统一在「权限」页完成。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Button("打开权限设置") {
+                    AppRouter.shared.openSettings(tab: .permissions)
+                }
             }
         }
         .formStyle(.grouped)
@@ -272,6 +175,184 @@ private struct ScreenshotSettingsPane: View {
             if case .success(let urls) = result, let url = urls.first {
                 settings.screenshotSaveDirectoryPath = url.path
             }
+        }
+    }
+}
+
+// MARK: - 权限
+
+/// 应用唯一的权限交互页：检测、申请、跳转系统设置、重置屏幕录制授权记录都在这里。
+/// 状态与底层调用统一来自 `PermissionCenter`，不在其它页面重复申请或展示。
+private struct PermissionSettingsPane: View {
+    @ObservedObject private var center = PermissionCenter.shared
+    @State private var showResetConfirmation = false
+
+    var body: some View {
+        Form {
+            Section {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Kaiming 需要的系统权限全部集中在这里检测、申请和设置。")
+                        .font(.callout)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    HStack(spacing: 10) {
+                        Text("已授权 \(center.grantedCount) / \(KaimingPermission.allCases.count)")
+                            .font(.callout.weight(.medium))
+                            .monospacedDigit()
+                            .foregroundStyle(center.allGranted ? .green : .secondary)
+
+                        Spacer(minLength: 0)
+
+                        if center.isDetecting {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+
+                        Button("全部重新检测") {
+                            center.detectAll()
+                        }
+                        .controlSize(.small)
+                        .disabled(center.isDetecting)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+
+            ForEach(KaimingPermission.allCases) { permission in
+                Section {
+                    PermissionCard(
+                        permission: permission,
+                        status: center.status(for: permission),
+                        isDetecting: center.isDetecting,
+                        onRequest: { center.request(permission) },
+                        onOpenSettings: { center.openSystemSettings(permission) },
+                        onDetect: { center.detectAll() },
+                        onReset: { showResetConfirmation = true }
+                    )
+                }
+            }
+
+            Section("关于 TCC 授权") {
+                Text("macOS 的 TCC 授权通常只对之后新启动的进程生效。重新构建应用后，系统设置里可能仍显示 Kaiming 已授权，但当前构建实际无法使用权限，此时请在屏幕录制一栏使用「重置授权记录…」后重新授权并重启应用。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .formStyle(.grouped)
+        .task {
+            center.detectAll()
+        }
+        .confirmationDialog(
+            "重置屏幕录制授权记录？",
+            isPresented: $showResetConfirmation
+        ) {
+            Button("重置授权记录", role: .destructive) {
+                if center.resetScreenRecording() {
+                    AppState.shared.flash(
+                        "已重置屏幕录制授权记录：请在系统设置中重新勾选 Kaiming，然后重启应用。",
+                        kind: .info
+                    )
+                    // 重置后直接打开系统设置的「屏幕录制」页，用户只需勾选并回到本页重启。
+                    center.openSystemSettings(.screenRecording)
+                } else {
+                    AppState.shared.flash(
+                        "重置屏幕录制授权记录失败，请手动在系统设置中移除 Kaiming 后重新添加。",
+                        kind: .error
+                    )
+                }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("会清除 Kaiming 的屏幕录制授权记录，需要在系统设置中重新勾选 Kaiming 并重启应用。仅在系统设置显示已授权但仍提示未授权时使用。")
+        }
+    }
+}
+
+/// 单项权限卡片：状态徽标 + 用途 / 后果说明 + 检测、申请、跳转系统设置等操作。
+private struct PermissionCard: View {
+    let permission: KaimingPermission
+    let status: PermissionStatus
+    let isDetecting: Bool
+    let onRequest: () -> Void
+    let onOpenSettings: () -> Void
+    let onDetect: () -> Void
+    let onReset: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: permission.symbolName)
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 24, height: 24)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        Text(permission.title)
+                            .font(.headline)
+                        statusBadge
+                    }
+
+                    Text(permission.purpose)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Text(permission.consequence)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            HStack(spacing: 8) {
+                Button("请求权限", action: onRequest)
+                Button("打开系统设置", action: onOpenSettings)
+                Button("检测", action: onDetect)
+                    .disabled(isDetecting)
+                Spacer(minLength: 0)
+            }
+            .controlSize(.small)
+
+            if permission == .screenRecording || (!status.isGranted && permission.requiresRelaunch) {
+                HStack(spacing: 8) {
+                    if permission == .screenRecording {
+                        Button("重置授权记录…", role: .destructive, action: onReset)
+                    }
+                    if !status.isGranted && permission.requiresRelaunch {
+                        Button("重启应用") {
+                            AppRelauncher.relaunch()
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+                .controlSize(.small)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    @ViewBuilder
+    private var statusBadge: some View {
+        if status.checkedAt == nil {
+            HStack(spacing: 4) {
+                ProgressView()
+                    .controlSize(.mini)
+                Text("检测中…")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        } else if status.isGranted {
+            Label("已授权", systemImage: "checkmark.seal.fill")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.green)
+        } else {
+            Label("未授权", systemImage: "exclamationmark.triangle.fill")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.orange)
         }
     }
 }
@@ -329,11 +410,22 @@ private struct MarkdownSettingsPane: View {
                 Stepper(
                     "正文字号：\(Int(settings.markdownFontSize)) pt",
                     value: $settings.markdownFontSize,
-                    in: 11...24,
+                    in: 10...36,
                     step: 1
                 )
 
                 Toggle("实时渲染", isOn: $settings.markdownLivePreview)
+
+                Picker("页宽", selection: $settings.markdownPageWidth) {
+                    ForEach(MarkdownPageWidth.allCases) { width in
+                        Text(width.title).tag(width)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Text("页宽控制正文阅读栏的最大宽度；在内容区按住 ⌘ 滚动鼠标滚轮可缩放字号。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
 
                 Text("关闭实时渲染会切换到源码模式，仅显示 Markdown 文本；重新打开开关恢复内联渲染。")
                     .font(.caption)
@@ -341,7 +433,7 @@ private struct MarkdownSettingsPane: View {
             }
 
             Section("说明") {
-                Text("Markdown 使用原生 TextKit 2 渲染，不包含 WebView。支持标题、列表、表格、代码高亮、任务列表与 LaTeX 公式。")
+                Text("Markdown 编辑器使用原生 TextKit 2 渲染，采用 GitHub 浅色/深色配色；渲染预览使用 WebView，支持 HTML 块、Mermaid 图表与导出 PDF。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Text("Markdown 窗口从菜单栏面板右上角按钮或 ⌥⇧M 打开，拥有独立的 Window scene。")
@@ -413,20 +505,11 @@ private struct ShortcutSettingsPane: View {
 private struct AboutSettingsPane: View {
     var body: some View {
         VStack(spacing: 14) {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [Color.accentColor, Color.accentColor.opacity(0.55)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
+            Image("Logo")
+                .resizable()
+                .interpolation(.high)
                 .frame(width: 84, height: 84)
-                .overlay {
-                    Image(systemName: "viewfinder")
-                        .font(.system(size: 42, weight: .semibold))
-                        .foregroundStyle(.white)
-                }
+                .accessibilityHidden(true)
                 .padding(.top, 26)
 
             Text("开明 Kaiming")
@@ -446,7 +529,7 @@ private struct AboutSettingsPane: View {
                 aboutRow("crop", "截图：ScreenCaptureKit + AppKit 全屏覆盖层")
                 aboutRow("doc.on.clipboard", "剪贴板：NSPasteboard 串行队列 + 历史记录")
                 aboutRow("photo", "壁纸：NSWorkspace，多显示器，持久化到 Application Support")
-                aboutRow("doc.richtext", "Markdown：SwiftUI + TextKit 2 原生渲染")
+                aboutRow("doc.richtext", "Markdown：TextKit 2 原生编辑器 + WebView 渲染预览")
             }
             .padding(.horizontal, 40)
 

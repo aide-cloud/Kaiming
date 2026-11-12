@@ -183,8 +183,40 @@ final class WallpaperManager: ObservableObject {
         }
     }
 
-    /// 从 `NSPasteboard.general` 读取图片（PNG / TIFF / 图片文件路径）后设为壁纸。
-    /// 剪贴板访问全部串行化在 `WallpaperIO.pasteboard` 队列上。
+    /// 统一壁纸入口：按文件类型自动路由——图片走 `setWallpaper(fileURL:screenIDs:)`，
+    /// 视频走 `startDynamicWallpaper(fileURL:screenIDs:)`，其他类型直接给出错误提示。
+    ///
+    /// 面板「选择壁纸…」与剪贴板中的文件都经过这里；两个既有方法签名保持不变（冻结契约），
+    /// 本方法只负责分派与统一校验。
+    func applyWallpaper(from url: URL, screenIDs: Set<String>) {
+        guard !isBusy else {
+            Log.wallpaper.info("Ignore applyWallpaper(from:) while busy")
+            return
+        }
+
+        // 面板返回的 URL 可能是安全作用域资源，类型判定需要读取文件属性，先获取访问权。
+        let accessing = url.startAccessingSecurityScopedResource()
+        let kind = WallpaperContentKind.kind(for: url)
+        if accessing { url.stopAccessingSecurityScopedResource() }
+
+        switch kind {
+        case .image:
+            Log.wallpaper.info("Apply wallpaper \(url.lastPathComponent, privacy: .public) as image")
+            setWallpaper(fileURL: url, screenIDs: screenIDs)
+        case .video:
+            Log.wallpaper.info("Apply wallpaper \(url.lastPathComponent, privacy: .public) as video")
+            startDynamicWallpaper(fileURL: url, screenIDs: screenIDs)
+        case nil:
+            Log.wallpaper.error(
+                "Unsupported wallpaper file type: \(url.lastPathComponent, privacy: .public)"
+            )
+            AppState.shared.flash("不支持的文件类型：仅支持图片或 MP4 / MOV / M4V 视频", kind: .error)
+        }
+    }
+
+    /// 从 `NSPasteboard.general` 读取图片数据或图片 / 视频文件后设为壁纸。
+    /// 剪贴板访问全部串行化在 `WallpaperIO.pasteboard` 队列上；文件统一交给
+    /// `applyWallpaper(from:screenIDs:)` 按类型路由。
     func setFromPasteboard(screenIDs: Set<String>) {
         guard !isBusy else {
             Log.wallpaper.info("Ignore setFromPasteboard while busy")
@@ -194,7 +226,7 @@ final class WallpaperManager: ObservableObject {
 
         isBusy = true
         Task { [weak self] in
-            let result = await WallpaperFileStore.readPasteboardImage()
+            let result = await WallpaperFileStore.readPasteboardContent()
             guard let self else { return }
 
             switch result {
@@ -206,14 +238,14 @@ final class WallpaperManager: ObservableObject {
                     self.finishFailure(error)
                 }
 
-            case .file(let imageURL):
+            case .file(let fileURL):
                 self.isBusy = false
-                self.setWallpaper(fileURL: imageURL, screenIDs: targets)
+                self.applyWallpaper(from: fileURL, screenIDs: targets)
 
             case .empty:
                 self.isBusy = false
-                AppState.shared.flash("剪贴板中没有可用图片，请先复制一张图片", kind: .info)
-                Log.wallpaper.info("Clipboard contains no image")
+                AppState.shared.flash("剪贴板中没有可用图片或视频文件，请先复制图片或视频", kind: .info)
+                Log.wallpaper.info("Clipboard contains no image or video")
             }
         }
     }
@@ -233,7 +265,8 @@ final class WallpaperManager: ObservableObject {
 
     // MARK: - 动态视频壁纸
 
-    /// 选择视频并设为桌面层动态壁纸（每屏一个窗口、循环静音、多屏独立）。
+    /// 把视频设为桌面层动态壁纸（每屏一个窗口、循环静音、多屏独立）。
+    /// 通常由统一入口 `applyWallpaper(from:screenIDs:)` 在判定为视频后调用。
     ///
     /// macOS 没有公开 API 把视频设为系统壁纸，这里用 `CGWindowLevelForKey(.desktopWindow) + 1`
     /// 的桌面层窗口模拟，属于实验方案；桌面图标层级更高。
@@ -244,7 +277,7 @@ final class WallpaperManager: ObservableObject {
         }
         guard let targets = resolveTargets(screenIDs) else { return }
         guard WallpaperVideoStore.isSupportedVideoFile(fileURL) else {
-            AppState.shared.flash("仅支持 MP4 / MOV 视频文件", kind: .error)
+            AppState.shared.flash("仅支持 MP4 / MOV / M4V 视频文件", kind: .error)
             return
         }
 

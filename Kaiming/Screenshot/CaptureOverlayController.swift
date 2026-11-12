@@ -69,6 +69,8 @@ final class CaptureOverlayController: NSObject {
     let frozenScreens: [FrozenScreen]
     private(set) var candidates: [WindowCandidate]
     let session = AnnotationSession()
+    /// 成品是否合成 macOS 窗口头部；窗口截图原图已含标题栏，由调用方按来源决定是否叠加。
+    let addsWindowHeader: Bool
 
     var onFinish: ((CGImage) -> Void)?
     var onCancel: (() -> Void)?
@@ -112,12 +114,14 @@ final class CaptureOverlayController: NSObject {
         mode: Mode,
         frozenScreens: [FrozenScreen],
         windows windowDescriptors: [ScreenCaptureService.WindowDescriptor],
-        initialScreen: NSScreen?
+        initialScreen: NSScreen?,
+        addsWindowHeader: Bool = false
     ) {
         self.mode = mode
         self.frozenScreens = frozenScreens
         self.hintDisplayID = Self.displayID(of: initialScreen)
         self.candidates = []
+        self.addsWindowHeader = addsWindowHeader
         super.init()
         self.candidates = Self.makeCandidates(
             from: windowDescriptors,
@@ -198,6 +202,12 @@ final class CaptureOverlayController: NSObject {
         guard let target else { return }
 
         let cornerRadius = session.clampedCornerRadius
+        // 窗口截图原图已经带标题栏，不再重复叠加装饰头部。
+        let shouldAddWindowHeader: Bool
+        switch target.source {
+        case .window: shouldAddWindowHeader = false
+        case .region, .longPreview: shouldAddWindowHeader = addsWindowHeader
+        }
         let flattened: CGImage?
         switch target.source {
         case .region:
@@ -217,7 +227,8 @@ final class CaptureOverlayController: NSObject {
                 baseImage: cropped,
                 annotations: session.annotations,
                 boundsInPoints: target.rect.size,
-                cornerRadius: cornerRadius
+                cornerRadius: cornerRadius,
+                addsWindowHeader: shouldAddWindowHeader
             )
         case .window, .longPreview:
             guard let image = target.image else {
@@ -228,7 +239,8 @@ final class CaptureOverlayController: NSObject {
                 baseImage: image,
                 annotations: session.annotations,
                 boundsInPoints: target.rect.size,
-                cornerRadius: cornerRadius
+                cornerRadius: cornerRadius,
+                addsWindowHeader: shouldAddWindowHeader
             )
         }
 
@@ -791,14 +803,10 @@ final class CaptureOverlayController: NSObject {
     private func requestAutomaticLongCapture() {
         guard longCapturePhase == .capturing, !longCaptureSession.isAutomatic else { return }
 
-        var trusted = AccessibilityPermission.isTrusted
-        if !trusted {
-            _ = AccessibilityPermission.prompt()
-            trusted = AccessibilityPermission.isTrusted
-        }
-
+        // 权限申请只发生在设置「权限」页；截图流程里只做只读判断，未授权时保持手动滚动。
+        let trusted = AccessibilityPermission.isTrusted
         guard longCaptureSession.requestAutomatic(accessibilityTrusted: trusted) else {
-            let message = "自动滚动需要辅助功能权限：请在“系统设置 › 隐私与安全性 › 辅助功能”中勾选 Kaiming 并重新启动；已保持手动滚动。"
+            let message = "自动滚动需要辅助功能权限：请在「设置 → 权限」中申请并勾选 Kaiming，然后重启应用；已保持手动滚动。"
             longCaptureProgress.message = message
             Log.screenshot.error("Long capture auto scroll blocked: accessibility not trusted")
             return
@@ -1130,7 +1138,7 @@ final class CaptureOverlayController: NSObject {
         }
 
         longCaptureProgress.hintText = mode == .automatic
-            ? "自动滚动中：若页面未移动，请检查辅助功能权限或改为手动滚动。Return 提前完成 · Esc 取消。"
+            ? "自动滚动中：若页面未移动，请在「设置 → 权限」检查辅助功能权限，或改为手动滚动。Return 提前完成 · Esc 取消。"
             : "在实时页面上滚动即可自动采样；点「自动滚动」可切换 CGEvent 滚动。Return 完成 · Esc 取消。"
     }
 
