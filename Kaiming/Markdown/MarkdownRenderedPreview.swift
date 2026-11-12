@@ -736,6 +736,11 @@ struct MarkdownRenderedPreviewView: View {
     var onExportPDF: (() -> Void)? = nil
     /// 内容导航点击标题时传入；文档尚未加载完成也会保存为 pending，加载后自动生效。
     var scrollRequest: MarkdownWebScrollRequest? = nil
+    /// ⌘F 查找请求（由窗口层传入，WebView 内用 JS 匹配并高亮）。
+    var searchRequest: MarkdownWebSearchRequest? = nil
+    var onSearchResult: ((MarkdownWebSearchResult) -> Void)? = nil
+    /// 点击正文链接：返回 `true` 表示 App 内已处理（内部链接留在预览里跳转）。
+    var onOpenLink: ((URL) -> Bool)? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -861,7 +866,10 @@ struct MarkdownRenderedPreviewView: View {
                 baseURL: document.baseURL ?? baseURL,
                 pageWidth: pageWidth,
                 fontSize: fontSize,
-                scrollRequest: scrollRequest
+                scrollRequest: scrollRequest,
+                searchRequest: searchRequest,
+                onSearchResult: onSearchResult,
+                onLinkActivated: onOpenLink
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let attributedText = document.attributedText {

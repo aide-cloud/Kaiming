@@ -76,6 +76,7 @@ enum ScreenCapturePermission {
     // 截图：copyScreenshotToClipboard / playCaptureSound / captureCursor
     //       screenshotFormat / autoSaveScreenshots / screenshotSaveDirectoryPath
     //       成品外观：screenshotImageWindowHeader（默认 true，设置可关闭）
+    //       截图内容：screenshotHideOwnWindows（默认 false；关闭时 Markdown 等窗口进入截图）
     //       screenshotSaveDirectory: URL
     // 剪贴板：clipboardMonitoringEnabled / clipboardHistoryLimit / clipboardPollInterval
     // 快捷键：hotkeysEnabled
@@ -437,3 +438,18 @@ struct PermissionStatus: Equatable, Sendable { var isGranted: Bool; var checkedA
 - `AppState.screenRecordingGranted` / `permissionProbeFinished` 保留为 `PermissionCenter` 的只读镜像，
   供既有调用点读取；新代码直接观察 `PermissionCenter.shared`。
 - 测试钩子：`--snapshot-settings <png> --snapshot-settings-tab permissions` 渲染权限页快照。
+
+## 24. v1.8 查找/替换与预览内链
+
+- 共享设置新增 `SettingsStore.screenshotHideOwnWindows`（键 `kaiming.screenshot.hideOwnWindows`，
+  默认 `false`）。`ScreenCaptureService.prepare(displayIDs:includeWindows:showsCursor:hideOwnWindows:)`
+  新增最后一个参数；`false` 时不排除本应用窗口，Markdown 内容可进入冻结画面与窗口候选。
+  长截图逐帧采集仍排除本应用，避免截图边框/HUD 被拼进结果。
+- Markdown 查找/替换事件由 `Notification.Name` 承载（`Kaiming/Markdown/MarkdownFind.swift`）：
+  `kaiming.markdown.find.query` / `.results` / `.clear` / `.replaceCurrent` / `.replaceAll`。
+  `MarkdownEditorBus` 只绑定名称，匹配、高亮、写回都在引擎内完成。
+- `MarkdownFindController` 是编辑器与渲染预览共用的状态机；渲染预览通过
+  `MarkdownWebSearchRequest` / `MarkdownWebSearchResult` 与 `MarkdownWebPreviewView` 通信，
+  JS 入口为 `window.KaimingPreview.find(options)` / `.clearFind()`。
+- 渲染预览链接：`MarkdownWebPreviewView.onLinkActivated(URL) -> Bool` 返回 `true` 表示 App 内
+  已处理（内部文件留在预览里跳转），`false` 时才交给 `NSWorkspace` 打开。

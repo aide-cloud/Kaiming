@@ -25,6 +25,7 @@ final class SettingsStore: ObservableObject {
         static let autoSaveScreenshots = "kaiming.screenshot.autoSave"
         static let screenshotSaveDirectory = "kaiming.screenshot.saveDirectory"
         static let screenshotImageWindowHeader = "kaiming.screenshot.imageWindowHeader"
+        static let screenshotHideOwnWindows = "kaiming.screenshot.hideOwnWindows"
         static let clipboardMonitoring = "kaiming.clipboard.monitoring"
         static let clipboardHistoryLimit = "kaiming.clipboard.historyLimit"
         static let clipboardPollInterval = "kaiming.clipboard.pollInterval"
@@ -74,6 +75,13 @@ final class SettingsStore: ObservableObject {
     /// 区域 / 全屏 / 长截图生效；窗口截图本身已含标题栏，不重复叠加。
     @Published var screenshotImageWindowHeader: Bool {
         didSet { defaults.set(screenshotImageWindowHeader, forKey: Keys.screenshotImageWindowHeader) }
+    }
+
+    /// 截图时是否隐藏 Kaiming 自己的窗口（含 Markdown 编辑/预览窗口）。
+    /// 默认 `false`：截图内容保留 Markdown 等本应用窗口，方便直接把文档截进图里。
+    /// 长截图逐帧采集仍会排除覆盖层边框/HUD，避免把截图辅助 UI 拼进结果。
+    @Published var screenshotHideOwnWindows: Bool {
+        didSet { defaults.set(screenshotHideOwnWindows, forKey: Keys.screenshotHideOwnWindows) }
     }
 
     // MARK: - 剪贴板
@@ -130,6 +138,7 @@ final class SettingsStore: ObservableObject {
         autoSaveScreenshots = bool(Keys.autoSaveScreenshots, default: false)
         screenshotSaveDirectoryPath = defaults.string(forKey: Keys.screenshotSaveDirectory) ?? ""
         screenshotImageWindowHeader = bool(Keys.screenshotImageWindowHeader, default: true)
+        screenshotHideOwnWindows = bool(Keys.screenshotHideOwnWindows, default: false)
 
         clipboardMonitoringEnabled = bool(Keys.clipboardMonitoring, default: true)
         clipboardHistoryLimit = defaults.object(forKey: Keys.clipboardHistoryLimit) as? Int ?? 50
@@ -177,6 +186,7 @@ final class SettingsStore: ObservableObject {
         autoSaveScreenshots = false
         screenshotSaveDirectoryPath = ""
         screenshotImageWindowHeader = true
+        screenshotHideOwnWindows = false
         clipboardMonitoringEnabled = true
         clipboardHistoryLimit = 50
         clipboardPollInterval = 0.5

@@ -144,6 +144,10 @@ private struct ScreenshotSettingsPane: View {
             Section("行为") {
                 Toggle("显示鼠标指针", isOn: $settings.captureCursor)
                 Toggle("播放截图声音", isOn: $settings.playCaptureSound)
+                Toggle("截图时隐藏 Kaiming 窗口", isOn: $settings.screenshotHideOwnWindows)
+                Text("默认不隐藏：区域/窗口/全屏截图会保留 Markdown 等本应用窗口，方便把文档内容一起截进图里。开启后截图不包含 Kaiming 自己的窗口。长截图逐帧采集始终排除截图边框与 HUD，避免辅助界面被拼进结果。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Text("区域 / 窗口 / 全屏三种模式均可通过菜单栏或全局快捷键触发。")
                     .font(.caption)
                     .foregroundStyle(.secondary)

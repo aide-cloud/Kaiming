@@ -12,6 +12,7 @@ struct MarkdownWindowView: View {
     @EnvironmentObject private var settings: SettingsStore
 
     @StateObject private var model = MarkdownDocumentModel()
+    @StateObject private var find = MarkdownFindController()
     @ObservedObject private var openRequest = MarkdownOpenRequest.shared
     @ObservedObject private var folderTree = MarkdownFolderTree.shared
     @ObservedObject private var imageProvider = MarkdownImageProvider.shared
@@ -90,6 +91,23 @@ struct MarkdownWindowView: View {
             WindowChromeConfigurator(
                 title: "\(model.displayName) — Kaiming",
                 isDocumentEdited: model.isDirty
+            )
+            .frame(width: 0, height: 0)
+        )
+        .background(
+            MarkdownFindKeyMonitor(
+                isFindPresented: find.isPresented,
+                onFind: { showsReplace in presentFind(showsReplace: showsReplace) },
+                onFindNext: {
+                    if find.isPresented { find.next() }
+                },
+                onFindPrevious: {
+                    if find.isPresented { find.previous() }
+                },
+                onDismiss: {
+                    find.dismiss()
+                    if showEditor { isEditorFocused = true }
+                }
             )
             .frame(width: 0, height: 0)
         )
@@ -206,7 +224,42 @@ struct MarkdownWindowView: View {
                     scheduleRenderedPreviewReload()
                 }
             }
+            if find.isPresented, find.target == .editor {
+                find.scheduleSearch(resetIndex: false)
+            }
         }
+        .onChange(of: isRenderedPreviewVisible) { _, _ in
+            find.setTarget(currentFindTarget)
+        }
+        .onChange(of: preview?.url) { _, _ in
+            if preview != nil {
+                find.dismiss()
+            }
+            find.setTarget(currentFindTarget)
+        }
+        .onChange(of: renderedDocument.html) { _, html in
+            guard html != nil, find.isPresented, find.target == .renderedPreview else { return }
+            find.refreshSearchIfPresented()
+        }
+    }
+
+    // MARK: - 查找
+
+    /// 当前可见内容属于哪个查找目标。非 Markdown 文件预览（图片/二进制/文本
+    /// 文件预览）没有可植入的查找视图，因此不在此开放查找。
+    private var currentFindTarget: MarkdownFindTarget {
+        if preview != nil { return .unavailable }
+        if isRenderedPreviewVisible { return .renderedPreview }
+        return .editor
+    }
+
+    private func presentFind(showsReplace: Bool) {
+        // 普通文件预览（文本/图片/代码）不提供查找；Markdown 编辑与渲染预览都支持。
+        guard preview == nil else {
+            model.showStatus("当前文件预览不支持查找", kind: .info)
+            return
+        }
+        find.present(target: currentFindTarget, showsReplace: showsReplace)
     }
 
     // MARK: - 编辑器
@@ -240,25 +293,37 @@ struct MarkdownWindowView: View {
     /// 预览时编辑器仍留在视图层级里（隐藏且不接收事件），从而保留未保存内容与撤销栈；
     /// 富内容 inspector 覆盖在编辑区右侧，不改变窗口/侧栏宽度，也不打断编辑。
     private var richEditorArea: some View {
-        ZStack(alignment: .trailing) {
-            editorArea
-                // inspector 覆盖区让出空间，编辑内容重新排版而不是被遮住。
-                .padding(.trailing, isInspectorVisible ? 330 : 0)
+        ZStack(alignment: .topTrailing) {
+            ZStack(alignment: .trailing) {
+                editorArea
+                    // inspector 覆盖区让出空间，编辑内容重新排版而不是被遮住。
+                    .padding(.trailing, isInspectorVisible ? 330 : 0)
 
-            if isInspectorVisible {
-                MarkdownInspectorView(
-                    headings: headings,
-                    onSelectHeading: { selectHeading($0) },
-                    onClose: {
-                        isInspectorVisible = false
-                        inspectorRefreshTask?.cancel()
-                    }
-                )
-                .transition(.move(edge: .trailing))
+                if isInspectorVisible {
+                    MarkdownInspectorView(
+                        headings: headings,
+                        onSelectHeading: { selectHeading($0) },
+                        onClose: {
+                            isInspectorVisible = false
+                            inspectorRefreshTask?.cancel()
+                        }
+                    )
+                    .transition(.move(edge: .trailing))
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            if find.isPresented {
+                MarkdownFindBar(controller: find)
+                    .padding(.top, 10)
+                    .padding(.trailing, isInspectorVisible ? 342 : 12)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .zIndex(30)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .animation(.easeInOut(duration: 0.18), value: isInspectorVisible)
+        .animation(.easeInOut(duration: 0.14), value: find.isPresented)
     }
 
     private var showEditor: Bool {
@@ -296,7 +361,10 @@ struct MarkdownWindowView: View {
                     pageWidth: settings.markdownPageWidth,
                     fontSize: bodyFontSize,
                     onExportPDF: { exportPDF() },
-                    scrollRequest: webScrollRequest
+                    scrollRequest: webScrollRequest,
+                    searchRequest: find.webSearchRequest,
+                    onSearchResult: { find.applyWebResult($0) },
+                    onOpenLink: handleRenderedPreviewLink
                 )
                 .frame(maxWidth: contentMaxWidth)
             }
@@ -619,6 +687,35 @@ struct MarkdownWindowView: View {
         if isRenderedPreviewVisible {
             loadRenderedPreview()
         }
+
+        #if DEBUG
+        // 快照验收查找条与查找高亮：--markdown-find [--markdown-find-query 词]
+        // [--markdown-find-regex] [--markdown-find-replacement 词]
+        // [--markdown-find-replace | --markdown-find-replace-all]
+        if ProcessInfo.processInfo.arguments.contains("--markdown-find") {
+            find.query = debugFindQueryArgument ?? "Markdown"
+            find.useRegex = ProcessInfo.processInfo.arguments.contains("--markdown-find-regex")
+            if let replacement = debugFindReplacementArgument {
+                find.replacement = replacement
+            }
+            presentFind(showsReplace: true)
+            find.scheduleSearch(resetIndex: true, immediate: true)
+
+            let arguments = ProcessInfo.processInfo.arguments
+            if arguments.contains("--markdown-find-replace")
+                || arguments.contains("--markdown-find-replace-all") {
+                let replaceAll = arguments.contains("--markdown-find-replace-all")
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 600_000_000)
+                    if replaceAll {
+                        find.replaceAll()
+                    } else {
+                        find.replaceCurrent()
+                    }
+                }
+            }
+        }
+        #endif
     }
 
     #if DEBUG
@@ -627,6 +724,20 @@ struct MarkdownWindowView: View {
         guard let index = arguments.firstIndex(of: "--markdown-file"),
               index + 1 < arguments.count else { return nil }
         return URL(fileURLWithPath: arguments[index + 1])
+    }
+
+    private var debugFindQueryArgument: String? {
+        let arguments = ProcessInfo.processInfo.arguments
+        guard let index = arguments.firstIndex(of: "--markdown-find-query"),
+              index + 1 < arguments.count else { return nil }
+        return arguments[index + 1]
+    }
+
+    private var debugFindReplacementArgument: String? {
+        let arguments = ProcessInfo.processInfo.arguments
+        guard let index = arguments.firstIndex(of: "--markdown-find-replacement"),
+              index + 1 < arguments.count else { return nil }
+        return arguments[index + 1]
     }
     #endif
 
@@ -780,6 +891,47 @@ struct MarkdownWindowView: View {
             openInternalReference(fileURL)
         case .invalid(let message):
             model.showStatus(message, kind: .info)
+        }
+    }
+
+    /// 渲染预览里的链接：外部链接仍交给系统浏览器，内部文件链接留在应用内预览，
+    /// 不再让默认 Markdown 应用弹出新窗口。
+    private func handleRenderedPreviewLink(_ url: URL) -> Bool {
+        switch MarkdownLinkRouter.route(url, baseDirectory: referenceBaseURL) {
+        case .external(let externalURL):
+            _ = NSWorkspace.shared.open(externalURL)
+        case .internalFile(let fileURL):
+            openInternalReferenceInPreview(fileURL)
+        case .invalid(let message):
+            model.showStatus(message, kind: .info)
+        }
+        // 已在 App 内处理（或已明确失败），不再让 WebView 自己打开。
+        return true
+    }
+
+    private func openInternalReferenceInPreview(_ url: URL) {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+            model.presentError("引用的文件不存在：\(url.lastPathComponent)")
+            return
+        }
+        if isDirectory.boolValue {
+            openFolder(url, projectMode: true)
+            return
+        }
+
+        switch MarkdownFileTypes.kind(of: url) {
+        case .markdown:
+            // 保留渲染预览，只切换文档；`model.text` / `documentURL` 变化会
+            // 触发预览重建，导航看起来与点击页内锚点一致。
+            requestFileLoad(url)
+            let standardized = url.standardizedFileURL
+            Task { await folderTree.reveal(fileURL: standardized) }
+        case .text, .image, .other:
+            // 非 Markdown 文件沿用应用内的只读文件预览，而不是系统默认应用。
+            showPreview(url)
+        case .folder:
+            openFolder(url, projectMode: true)
         }
     }
 

@@ -154,7 +154,16 @@ final class MarkdownDocumentModel: ObservableObject {
                 lightBackground: MarkdownGitHubTheme.codeBackground,
                 darkBackground: MarkdownGitHubTheme.codeBackground
             ),
-            latex: SwiftMathBridge()
+            latex: SwiftMathBridge(),
+            // 查找/替换：窗口层只负责 UI，匹配、高亮与改写在引擎内完成，
+            // 因此高亮位置始终基于编辑器自己显示的文本坐标。
+            bus: MarkdownEditorBus(
+                findClearHighlights: .kaimingMarkdownFindClear,
+                findQuery: .kaimingMarkdownFindQuery,
+                findResults: .kaimingMarkdownFindResults,
+                replaceCurrent: .kaimingMarkdownFindReplaceCurrent,
+                replaceAll: .kaimingMarkdownFindReplaceAll
+            )
         )
         configuration.theme = makeGitHubTheme()
         // GFM `~~strikethrough~~` is opt-in in the engine; Kaiming's Markdown is

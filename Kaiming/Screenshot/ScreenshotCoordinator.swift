@@ -113,7 +113,8 @@ final class ScreenshotCoordinator: ObservableObject {
             let prepared = try await ScreenCaptureService.prepare(
                 displayIDs: requestedIDs,
                 includeWindows: mode == .window,
-                showsCursor: settings.captureCursor
+                showsCursor: settings.captureCursor,
+                hideOwnWindows: settings.screenshotHideOwnWindows
             )
             let images = Dictionary(uniqueKeysWithValues: prepared.displays.map { ($0.displayID, $0.image) })
             let frozenScreens: [CaptureOverlayController.FrozenScreen] = entries.compactMap { entry in

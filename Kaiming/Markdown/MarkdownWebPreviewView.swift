@@ -18,6 +18,13 @@ struct MarkdownWebPreviewView: NSViewRepresentable {
     var pageWidth: MarkdownPageWidth = .standard
     var fontSize: CGFloat = 14
     var scrollRequest: MarkdownWebScrollRequest? = nil
+    /// 查找请求（⌘F）：由窗口层的 `MarkdownFindController` 驱动。
+    var searchRequest: MarkdownWebSearchRequest? = nil
+    /// 查找结果回调（匹配数量/当前序号/正则错误）。
+    var onSearchResult: ((MarkdownWebSearchResult) -> Void)? = nil
+    /// 点击内容里的链接。返回 `true` 表示已由 App 内部处理（例如切换到另一个
+    /// Markdown 文档的渲染预览）；返回 `false` 时交给系统默认应用打开。
+    var onLinkActivated: ((URL) -> Bool)? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -31,11 +38,16 @@ struct MarkdownWebPreviewView: NSViewRepresentable {
 
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
+        webView.uiDelegate = context.coordinator
         webView.allowsBackForwardNavigationGestures = false
         webView.allowsMagnification = true
         webView.underPageBackgroundColor = MarkdownGitHubTheme.canvas
 
         context.coordinator.attach(webView)
+        context.coordinator.updateCallbacks(
+            onSearchResult: onSearchResult,
+            onLinkActivated: onLinkActivated
+        )
         context.coordinator.load(
             html: html,
             baseURL: baseURL,
@@ -43,10 +55,15 @@ struct MarkdownWebPreviewView: NSViewRepresentable {
             fontSize: fontSize
         )
         context.coordinator.updateScrollRequest(scrollRequest)
+        context.coordinator.applySearchRequest(searchRequest)
         return webView
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
+        context.coordinator.updateCallbacks(
+            onSearchResult: onSearchResult,
+            onLinkActivated: onLinkActivated
+        )
         context.coordinator.load(
             html: html,
             baseURL: baseURL,
@@ -54,11 +71,13 @@ struct MarkdownWebPreviewView: NSViewRepresentable {
             fontSize: fontSize
         )
         context.coordinator.updateScrollRequest(scrollRequest)
+        context.coordinator.applySearchRequest(searchRequest)
     }
 
     static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
         webView.stopLoading()
         webView.navigationDelegate = nil
+        webView.uiDelegate = nil
     }
 
     @MainActor
@@ -72,8 +91,22 @@ struct MarkdownWebPreviewView: NSViewRepresentable {
         private var lastHandledScrollRequestID: UUID?
         private var readinessProbe: Task<Void, Never>?
 
+        // 查找桥接
+        private var onSearchResult: ((MarkdownWebSearchResult) -> Void)?
+        private var onLinkActivated: ((URL) -> Bool)?
+        private var pendingSearchRequest: MarkdownWebSearchRequest?
+        private var lastSearchRequestID: UUID?
+
         func attach(_ webView: WKWebView) {
             self.webView = webView
+        }
+
+        func updateCallbacks(
+            onSearchResult: ((MarkdownWebSearchResult) -> Void)?,
+            onLinkActivated: ((URL) -> Bool)?
+        ) {
+            self.onSearchResult = onSearchResult
+            self.onLinkActivated = onLinkActivated
         }
 
         func load(html: String, baseURL: URL?, pageWidth: MarkdownPageWidth, fontSize: CGFloat) {
@@ -104,7 +137,29 @@ struct MarkdownWebPreviewView: NSViewRepresentable {
                 applyStyle(pendingStyle)
             }
             applyPendingScrollRequestIfPossible()
+            applyPendingSearchRequestIfPossible()
+            #if DEBUG
+            simulateLinkClickIfRequested()
+            #endif
         }
+
+        #if DEBUG
+        private var didSimulateLinkClick = false
+
+        /// 仅调试/快照验收：自动点击正文里的第一个链接，用来验证内部链接是否
+        /// 留在渲染预览中跳转。`KAIMING_PREVIEW_CLICK_LINK=1` 开启。
+        private func simulateLinkClickIfRequested() {
+            guard !didSimulateLinkClick,
+                  ProcessInfo.processInfo.environment["KAIMING_PREVIEW_CLICK_LINK"] == "1",
+                  let webView else { return }
+            didSimulateLinkClick = true
+            webView.evaluateJavaScript(
+                "(function(){var a=document.querySelector('.markdown-body a[href]');if(!a){return null;}var href=a.getAttribute('href');a.click();return href;})();"
+            ) { value, _ in
+                NSLog("Kaiming debug: simulated preview link click href=\(String(describing: value))")
+            }
+        }
+        #endif
 
         /// `didFinish` 会等所有子资源（远程图片）结束，图片慢或挂起时，
         /// 页宽/字号/标题跳转会被拖住。这里轮询运行时就绪（`window.KaimingPreview`
@@ -191,6 +246,66 @@ struct MarkdownWebPreviewView: NSViewRepresentable {
             // 会把 nil 隐式解包成 Any 并崩溃（快照模式 exit 133）。返回值忽略即可。
             webView.evaluateJavaScript(js) { _, _ in }
         }
+
+        // MARK: - 查找
+
+        /// 每次查找都带新的 UUID；同一个 request 只执行一次。文档尚未加载完成时
+        /// 先挂起，`documentDidLoad` 后自动补执行。
+        func applySearchRequest(_ request: MarkdownWebSearchRequest?) {
+            guard let request else { return }
+            guard request.id != lastSearchRequestID else { return }
+            lastSearchRequestID = request.id
+            guard isDocumentLoaded else {
+                pendingSearchRequest = request
+                return
+            }
+            runSearch(request)
+        }
+
+        private func applyPendingSearchRequestIfPossible() {
+            guard isDocumentLoaded, let request = pendingSearchRequest else { return }
+            pendingSearchRequest = nil
+            runSearch(request)
+        }
+
+        private func runSearch(_ request: MarkdownWebSearchRequest) {
+            guard let webView else { return }
+            if request.clear || request.query.isEmpty {
+                webView.evaluateJavaScript(
+                    "window.KaimingPreview && window.KaimingPreview.clearFind();"
+                ) { _, _ in }
+                return
+            }
+
+            let payload: [String: Any] = [
+                "query": request.query,
+                "useRegex": request.useRegex,
+                "caseSensitive": request.caseSensitive,
+                "index": request.currentIndex,
+                "requestID": request.id.uuidString
+            ]
+            guard let data = try? JSONSerialization.data(withJSONObject: payload),
+                  let json = String(data: data, encoding: .utf8) else { return }
+            let js = "window.KaimingPreview && window.KaimingPreview.find(\(json));"
+            webView.evaluateJavaScript(js) { [weak self] value, _ in
+                // JS 返回普通对象，WebKit 桥接成 NSDictionary；只在拿到结果时采纳，
+                // 避免文档切换瞬间的 nil 结果把界面清零。
+                guard let self, let dictionary = value as? [String: Any] else { return }
+                let count = (dictionary["count"] as? NSNumber)?.intValue ?? 0
+                let index = (dictionary["index"] as? NSNumber)?.intValue ?? 0
+                let error = dictionary["error"] as? String
+                Task { @MainActor in
+                    self.onSearchResult?(
+                        MarkdownWebSearchResult(
+                            requestID: request.id,
+                            count: count,
+                            index: index,
+                            errorMessage: error
+                        )
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -208,7 +323,7 @@ extension MarkdownWebPreviewView.Coordinator: WKNavigationDelegate {
         decidePolicyFor navigationAction: WKNavigationAction,
         decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void
     ) {
-        // WKNavigationAction 只在主线程可读；是否放行/外开在这里同步决定。
+        // WKNavigationAction 只在主线程可读；是否放行/内跳/外开在这里同步决定。
         MainActor.assumeIsolated {
             guard navigationAction.navigationType == .linkActivated,
                   let url = navigationAction.request.url else {
@@ -216,11 +331,16 @@ extension MarkdownWebPreviewView.Coordinator: WKNavigationDelegate {
                 return
             }
             // 页面内锚点（#标题）继续由 WebView 自己滚动。
-            if url.absoluteString.hasPrefix("#") {
+            if Self.isSameDocumentAnchor(url, baseURL: loadedBaseURL) {
                 decisionHandler(.allow)
                 return
             }
             decisionHandler(.cancel)
+            // 内部文件链接交给 App：在渲染预览里切换到目标文档，而不是
+            // 让系统默认应用弹出一个新窗口。
+            if let onLinkActivated, onLinkActivated(url) {
+                return
+            }
             NSWorkspace.shared.open(url)
         }
     }
@@ -233,5 +353,40 @@ extension MarkdownWebPreviewView.Coordinator: WKNavigationDelegate {
         MainActor.assumeIsolated {
             decisionHandler(.allow)
         }
+    }
+
+    /// `#anchor` 在 `loadHTMLString` 里会解析成 `about:blank#…` 或
+    /// `<baseURL>#…`；只有“去掉 fragment 后仍是当前文档/base”才算页内锚点。
+    /// `b.md#section` 必须走内链路由，不能被当成页内跳转放行。
+    private static func isSameDocumentAnchor(_ url: URL, baseURL: URL?) -> Bool {
+        guard url.fragment != nil else { return false }
+        if url.scheme == "about" { return true }
+        guard url.scheme == "file", let baseURL else { return false }
+        func normalized(_ path: String) -> String {
+            path.count > 1 && path.hasSuffix("/") ? String(path.dropLast()) : path
+        }
+        let targetPath = normalized(url.standardizedFileURL.path)
+        let basePath = normalized(baseURL.standardizedFileURL.path)
+        return !targetPath.isEmpty && targetPath == basePath
+    }
+}
+
+// MARK: - 新窗口请求
+
+/// `target="_blank"` 等新窗口请求：统一交给内跳/外开逻辑，绝不让 WebView
+/// 自己创建第二个窗口。
+extension MarkdownWebPreviewView.Coordinator: WKUIDelegate {
+    nonisolated func webView(
+        _ webView: WKWebView,
+        createWebViewWith configuration: WKWebViewConfiguration,
+        for navigationAction: WKNavigationAction,
+        windowFeatures: WKWindowFeatures
+    ) -> WKWebView? {
+        MainActor.assumeIsolated {
+            guard let url = navigationAction.request.url else { return }
+            if let onLinkActivated, onLinkActivated(url) { return }
+            NSWorkspace.shared.open(url)
+        }
+        return nil
     }
 }

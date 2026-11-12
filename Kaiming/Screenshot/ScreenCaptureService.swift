@@ -216,11 +216,17 @@ enum ScreenCaptureService {
 
     /// 一次性获取屏幕内容、冻结所有目标显示器，并（窗口模式时）列出候选窗口。
     ///
-    /// - Parameter displayIDs: 需要冻结的显示器；传空数组表示全部。
+    /// - Parameters:
+    ///   - displayIDs: 需要冻结的显示器；传空数组表示全部。
+    ///   - includeWindows: 是否枚举窗口模式候选窗口。
+    ///   - showsCursor: 是否包含鼠标指针。
+    ///   - hideOwnWindows: 是否把 Kaiming 自己的窗口排除在截图内容之外。默认 `true`
+    ///     保持旧行为；关闭后 Markdown 等本应用窗口会出现在截图里。
     static func prepare(
         displayIDs: [CGDirectDisplayID],
         includeWindows: Bool,
-        showsCursor: Bool
+        showsCursor: Bool,
+        hideOwnWindows: Bool = true
     ) async throws -> PreparedContent {
         let content = try await loadShareableContent()
 
@@ -231,7 +237,7 @@ enum ScreenCaptureService {
 
         let ownPID = ProcessInfo.processInfo.processIdentifier
         let ownBundleID = Bundle.main.bundleIdentifier
-        let excludedApplications = ownApplications(in: content)
+        let excludedApplications = hideOwnWindows ? ownApplications(in: content) : []
 
         var captures: [DisplayCapture] = []
         for display in content.displays {
@@ -278,12 +284,16 @@ enum ScreenCaptureService {
         var windowDescriptors: [WindowDescriptor] = []
         if includeWindows {
             windowDescriptors = content.windows.compactMap { window in
-                makeWindowDescriptor(for: window, ownPID: ownPID, ownBundleID: ownBundleID)
+                makeWindowDescriptor(
+                    for: window,
+                    ownPID: hideOwnWindows ? ownPID : -1,
+                    ownBundleID: hideOwnWindows ? ownBundleID : nil
+                )
             }
         }
 
         Log.screenshot.info(
-            "Prepared \(captures.count, privacy: .public) displays, \(windowDescriptors.count, privacy: .public) windows"
+            "Prepared \(captures.count, privacy: .public) displays, \(windowDescriptors.count, privacy: .public) windows, hideOwnWindows=\(hideOwnWindows, privacy: .public)"
         )
         return PreparedContent(displays: captures, windows: windowDescriptors)
     }

@@ -10,6 +10,12 @@
 //  renders the highlights into the underlying NSTextStorage and scrolls the
 //  current match into view.
 //
+//  Kaiming patch: literal matches stay case-/diacritic-insensitive by default,
+//  but every find/replace notification can opt into `useRegex` and
+//  `caseSensitive`. Regex replacements use NSRegularExpression templates
+//  (`$1`, `$2`, … numeric capture groups). Invalid patterns are reported through
+//  `findResults` (`userInfo["error"]`) instead of silently matching nothing.
+//
 
 import AppKit
 
@@ -21,6 +27,82 @@ extension NSAttributedString.Key {
 }
 
 extension NativeTextViewCoordinator {
+    /// A compiled find pattern. `.invalid` carries the message the host should
+    /// display; it is never treated as "zero matches" silently.
+    private enum FindPattern {
+        case literal(String)
+        case regularExpression(NSRegularExpression)
+        case invalid(String)
+
+        init(query: String, useRegex: Bool, caseSensitive: Bool) {
+            guard useRegex else {
+                self = .literal(query)
+                return
+            }
+            var options: NSRegularExpression.Options = []
+            if !caseSensitive { options.insert(.caseInsensitive) }
+            do {
+                self = .regularExpression(try NSRegularExpression(pattern: query, options: options))
+            } catch {
+                self = .invalid("正则表达式无效：\(error.localizedDescription)")
+            }
+        }
+
+        /// Match ranges in UTF-16 coordinates. Zero-length regex matches are
+        /// dropped: they cannot be highlighted or replaced without looping.
+        func ranges(in haystack: NSString, caseSensitive: Bool) -> [NSRange] {
+            switch self {
+            case .literal(let query):
+                guard !query.isEmpty else { return [] }
+                var options: NSString.CompareOptions = []
+                if !caseSensitive {
+                    options = [.caseInsensitive, .diacriticInsensitive]
+                }
+                var ranges: [NSRange] = []
+                var searchStart = 0
+                while searchStart < haystack.length {
+                    let scope = NSRange(location: searchStart, length: haystack.length - searchStart)
+                    let found = haystack.range(of: query, options: options, range: scope)
+                    if found.location == NSNotFound { break }
+                    if found.length > 0 { ranges.append(found) }
+                    searchStart = found.location + max(found.length, 1)
+                }
+                return ranges
+
+            case .regularExpression(let regex):
+                let fullRange = NSRange(location: 0, length: haystack.length)
+                return regex.matches(in: haystack as String, options: [], range: fullRange)
+                    .map(\.range)
+                    .filter { $0.length > 0 }
+
+            case .invalid:
+                return []
+            }
+        }
+
+        /// Replacement text for each match. Regex templates expand capture
+        /// groups against the matched text; literal mode repeats the template.
+        func replacementTexts(for ranges: [NSRange], template: String, in haystack: NSString) -> [String] {
+            switch self {
+            case .literal:
+                return Array(repeating: template, count: ranges.count)
+
+            case .regularExpression(let regex):
+                let fullRange = NSRange(location: 0, length: haystack.length)
+                let results = regex.matches(in: haystack as String, options: [], range: fullRange)
+                    .filter { $0.range.length > 0 }
+                guard results.count == ranges.count else { return [] }
+                let text = haystack as String
+                return results.map {
+                    regex.replacementString(for: $0, in: text, offset: 0, template: template)
+                }
+
+            case .invalid:
+                return []
+            }
+        }
+    }
+
     /// Legacy path: the host computes match ranges and posts them. Kept for compatibility, but
     /// it trusts SOURCE-coordinate ranges, which misalign wherever the displayed text is shorter
     /// than the source (node links etc.). Prefer `handleFindQuery`.
@@ -46,34 +128,52 @@ extension NativeTextViewCoordinator {
         // an empty buffer, each reporting 0 matches and resetting the host's index.
         guard tv.window != nil else { return }
         let requestedIndex = info["currentIndex"] as? Int ?? 0
+        let useRegex = info["useRegex"] as? Bool ?? false
+        let caseSensitive = info["caseSensitive"] as? Bool ?? false
 
-        let allRanges = findMatches(of: query, in: tv.string as NSString)
+        guard !query.isEmpty else {
+            clearFindHighlights(in: tv)
+            postFindResults(count: 0, currentIndex: 0)
+            return
+        }
+
+        let pattern = FindPattern(query: query, useRegex: useRegex, caseSensitive: caseSensitive)
+        if case .invalid(let message) = pattern {
+            clearFindHighlights(in: tv)
+            postFindResults(count: 0, currentIndex: 0, error: message)
+            return
+        }
+
+        let allRanges = pattern.ranges(in: tv.string as NSString, caseSensitive: caseSensitive)
         let currentIndex = allRanges.isEmpty ? 0 : min(max(requestedIndex, 0), allRanges.count - 1)
         renderFindMatches(allRanges, currentIndex: currentIndex)
-        postFindResults(count: allRanges.count)
+        postFindResults(count: allRanges.count, currentIndex: currentIndex)
     }
 
     /// All ranges of `query` in `haystack` (display coordinates), case- and
     /// diacritic-insensitive. Shared by find and replace.
-    func findMatches(of query: String, in haystack: NSString) -> [NSRange] {
+    ///
+    /// Kaiming patch: `useRegex` / `caseSensitive` are optional so existing
+    /// callers keep the historical literal behaviour.
+    func findMatches(
+        of query: String,
+        in haystack: NSString,
+        useRegex: Bool = false,
+        caseSensitive: Bool = false
+    ) -> [NSRange] {
         guard !query.isEmpty else { return [] }
-        var ranges: [NSRange] = []
-        let opts: NSString.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
-        var searchStart = 0
-        while searchStart < haystack.length {
-            let scope = NSRange(location: searchStart, length: haystack.length - searchStart)
-            let found = haystack.range(of: query, options: opts, range: scope)
-            if found.location == NSNotFound { break }
-            ranges.append(found)
-            searchStart = found.location + max(found.length, 1)
-        }
-        return ranges
+        let pattern = FindPattern(query: query, useRegex: useRegex, caseSensitive: caseSensitive)
+        return pattern.ranges(in: haystack, caseSensitive: caseSensitive)
     }
 
-    private func postFindResults(count: Int) {
-        if let resultsName = configuration.services.bus.findResults {
-            NotificationCenter.default.post(name: resultsName, object: nil, userInfo: ["count": count])
-        }
+    private func postFindResults(count: Int, currentIndex: Int = 0, error: String? = nil) {
+        guard let resultsName = configuration.services.bus.findResults else { return }
+        var userInfo: [AnyHashable: Any] = [
+            "count": count,
+            "currentIndex": currentIndex
+        ]
+        if let error { userInfo["error"] = error }
+        NotificationCenter.default.post(name: resultsName, object: nil, userInfo: userInfo)
     }
 
     /// Replace the current find match with the replacement string (one undo
@@ -84,28 +184,43 @@ extension NativeTextViewCoordinator {
               let query = info["query"] as? String, !query.isEmpty,
               let replacement = info["replacement"] as? String else { return }
         let requestedIndex = info["currentIndex"] as? Int ?? 0
+        let useRegex = info["useRegex"] as? Bool ?? false
+        let caseSensitive = info["caseSensitive"] as? Bool ?? false
+        let pattern = FindPattern(query: query, useRegex: useRegex, caseSensitive: caseSensitive)
 
-        let matches = findMatches(of: query, in: tv.string as NSString)
-        guard !matches.isEmpty else { postFindResults(count: 0); return }
+        if case .invalid(let message) = pattern {
+            postFindResults(count: 0, currentIndex: 0, error: message)
+            return
+        }
+
+        let haystack = tv.string as NSString
+        let matches = pattern.ranges(in: haystack, caseSensitive: caseSensitive)
+        guard !matches.isEmpty else {
+            postFindResults(count: 0, currentIndex: 0)
+            return
+        }
         let idx = min(max(requestedIndex, 0), matches.count - 1)
         let target = matches[idx]
-        guard NSMaxRange(target) <= (tv.string as NSString).length else { return }
+        guard NSMaxRange(target) <= haystack.length else { return }
+        guard let replacementText = pattern
+            .replacementTexts(for: [target], template: replacement, in: haystack)
+            .first else { return }
 
         tv.breakUndoCoalescing()
         isProgrammaticEdit = true
         defer { isProgrammaticEdit = false }
-        guard tv.shouldChangeText(in: target, replacementString: replacement) else { return }
-        tv.textStorage?.replaceCharacters(in: target, with: replacement)
+        guard tv.shouldChangeText(in: target, replacementString: replacementText) else { return }
+        tv.textStorage?.replaceCharacters(in: target, with: replacementText)
         tv.didChangeText()
         tv.undoManager?.setActionName("Replace")
         tv.breakUndoCoalescing()
 
         // Re-find on the edited text; keep the index so focus lands on the next
         // occurrence (or clamps to the last remaining one).
-        let updated = findMatches(of: query, in: tv.string as NSString)
+        let updated = pattern.ranges(in: tv.string as NSString, caseSensitive: caseSensitive)
         let nextIndex = updated.isEmpty ? 0 : min(idx, updated.count - 1)
         renderFindMatches(updated, currentIndex: nextIndex)
-        postFindResults(count: updated.count)
+        postFindResults(count: updated.count, currentIndex: nextIndex)
     }
 
     /// Replace every find match in a single undo step, then re-highlight.
@@ -114,21 +229,35 @@ extension NativeTextViewCoordinator {
               let info = notification.userInfo,
               let query = info["query"] as? String, !query.isEmpty,
               let replacement = info["replacement"] as? String else { return }
+        let useRegex = info["useRegex"] as? Bool ?? false
+        let caseSensitive = info["caseSensitive"] as? Bool ?? false
+        let pattern = FindPattern(query: query, useRegex: useRegex, caseSensitive: caseSensitive)
 
-        let matches = findMatches(of: query, in: tv.string as NSString)
-        guard !matches.isEmpty else { postFindResults(count: 0); return }
+        if case .invalid(let message) = pattern {
+            postFindResults(count: 0, currentIndex: 0, error: message)
+            return
+        }
 
-        // Group as one undo; edit back-to-front so earlier ranges stay valid.
-        let orderedRanges = matches.reversed().map { NSValue(range: $0) }
-        let replacements = Array(repeating: replacement, count: matches.count)
+        let haystack = tv.string as NSString
+        let matches = pattern.ranges(in: haystack, caseSensitive: caseSensitive)
+        guard !matches.isEmpty else {
+            postFindResults(count: 0, currentIndex: 0)
+            return
+        }
+        let replacements = pattern.replacementTexts(for: matches, template: replacement, in: haystack)
+        guard replacements.count == matches.count else { return }
+
+        // Group as one undo; `shouldChangeText` expects ascending, non-overlapping
+        // ranges, while the storage edits run back-to-front so earlier ranges stay valid.
+        let orderedRanges = matches.map { NSValue(range: $0) }
 
         tv.breakUndoCoalescing()
         isProgrammaticEdit = true
         defer { isProgrammaticEdit = false }
         guard tv.shouldChangeText(inRanges: orderedRanges, replacementStrings: replacements) else { return }
         tv.textStorage?.beginEditing()
-        for match in matches.reversed() {
-            tv.textStorage?.replaceCharacters(in: match, with: replacement)
+        for (range, text) in zip(matches, replacements).reversed() {
+            tv.textStorage?.replaceCharacters(in: range, with: text)
         }
         tv.textStorage?.endEditing()
         tv.didChangeText()
@@ -136,9 +265,9 @@ extension NativeTextViewCoordinator {
         tv.breakUndoCoalescing()
 
         // Usually zero remain; non-zero only if the replacement contains the query.
-        let remaining = findMatches(of: query, in: tv.string as NSString)
+        let remaining = pattern.ranges(in: tv.string as NSString, caseSensitive: caseSensitive)
         renderFindMatches(remaining, currentIndex: 0)
-        postFindResults(count: remaining.count)
+        postFindResults(count: remaining.count, currentIndex: 0)
     }
 
     /// Drop find's own backgrounds and restyle the paragraphs they sat in.

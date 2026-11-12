@@ -713,9 +713,187 @@ enum MarkdownWebDocumentBuilder {
             return result;
           })();
 
+          // ===== 查找（⌘F）=====
+          // 不修改 DOM：把文本节点拼成一条连续字符串做匹配，再映射回 Range，
+          // 用 CSS Custom Highlight API 绘制高亮；旧系统退化为原生选区高亮当前项。
+          function ensureFindStyle() {
+            if (document.getElementById('kaiming-find-style')) { return; }
+            var style = document.createElement('style');
+            style.id = 'kaiming-find-style';
+            style.textContent = '::highlight(kaiming-find) { background-color: rgba(255, 213, 0, 0.38); } ::highlight(kaiming-find-current) { background-color: rgba(255, 145, 0, 0.62); }';
+            (document.head || document.documentElement).appendChild(style);
+          }
+
+          function clearFindHighlights() {
+            if (window.CSS && CSS.highlights) {
+              CSS.highlights.delete('kaiming-find');
+              CSS.highlights.delete('kaiming-find-current');
+            }
+            var selection = window.getSelection();
+            if (selection) { selection.removeAllRanges(); }
+          }
+
+          function collectFindText() {
+            var body = document.querySelector('.markdown-body') || document.body;
+            if (!body) { return { nodes: [], starts: [], text: '' }; }
+            var walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT, {
+              acceptNode: function (node) {
+                var parent = node.parentElement;
+                if (!parent || !node.nodeValue || !node.nodeValue.length) {
+                  return NodeFilter.FILTER_REJECT;
+                }
+                var tag = parent.tagName;
+                if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT' || tag === 'TEXTAREA') {
+                  return NodeFilter.FILTER_REJECT;
+                }
+                var computed = window.getComputedStyle(parent);
+                if (computed.display === 'none' || computed.visibility === 'hidden') {
+                  return NodeFilter.FILTER_REJECT;
+                }
+                if (parent.offsetParent === null && computed.position !== 'fixed') {
+                  return NodeFilter.FILTER_REJECT;
+                }
+                return NodeFilter.FILTER_ACCEPT;
+              }
+            });
+            var nodes = [];
+            var starts = [];
+            var text = '';
+            var node = walker.nextNode();
+            while (node) {
+              nodes.push(node);
+              starts.push(text.length);
+              text += node.nodeValue;
+              node = walker.nextNode();
+            }
+            return { nodes: nodes, starts: starts, text: text };
+          }
+
+          function rangeForSpan(collection, start, end) {
+            var nodes = collection.nodes;
+            var starts = collection.starts;
+            var first = -1;
+            var last = -1;
+            for (var i = 0; i < nodes.length; i++) {
+              var nodeStart = starts[i];
+              var nodeEnd = nodeStart + nodes[i].nodeValue.length;
+              if (first < 0 && start >= nodeStart && start < nodeEnd) { first = i; }
+              if (end > nodeStart && end <= nodeEnd) { last = i; break; }
+            }
+            if (first < 0 || last < 0) { return null; }
+            try {
+              var range = document.createRange();
+              range.setStart(nodes[first], start - starts[first]);
+              range.setEnd(nodes[last], end - starts[last]);
+              return range;
+            } catch (error) {
+              return null;
+            }
+          }
+
+          function findRanges(query, useRegex, caseSensitive) {
+            var collection = collectFindText();
+            var text = collection.text;
+            var ranges = [];
+            var limit = 5000;
+            if (!text.length || !query.length) { return { ranges: ranges }; }
+            if (useRegex) {
+              var regex = null;
+              try {
+                regex = new RegExp(query, caseSensitive ? 'g' : 'gi');
+              } catch (error) {
+                return { ranges: ranges, error: '正则表达式无效：' + (error && error.message ? error.message : String(error)) };
+              }
+              var match = regex.exec(text);
+              while (match) {
+                if (!match[0].length) {
+                  regex.lastIndex += 1;
+                } else {
+                  var regexRange = rangeForSpan(collection, match.index, match.index + match[0].length);
+                  if (regexRange) { ranges.push(regexRange); }
+                  if (ranges.length >= limit) { break; }
+                }
+                match = regex.exec(text);
+              }
+              return { ranges: ranges };
+            }
+            var haystack = caseSensitive ? text : text.toLowerCase();
+            var needle = caseSensitive ? query : query.toLowerCase();
+            var from = 0;
+            while (needle.length && from <= haystack.length - needle.length) {
+              var found = haystack.indexOf(needle, from);
+              if (found < 0) { break; }
+              var literalRange = rangeForSpan(collection, found, found + needle.length);
+              if (literalRange) { ranges.push(literalRange); }
+              from = found + Math.max(needle.length, 1);
+              if (ranges.length >= limit) { break; }
+            }
+            return { ranges: ranges };
+          }
+
+          function scrollToFindRange(range) {
+            var rect = range.getBoundingClientRect();
+            var viewport = window.innerHeight || document.documentElement.clientHeight || 0;
+            if (!viewport) { return; }
+            if (rect.height > 0 && rect.top >= 0 && rect.bottom <= viewport) { return; }
+            var pageY = (window.scrollY || window.pageYOffset || 0) + rect.top;
+            window.scrollTo(0, Math.max(0, pageY - viewport * 0.3));
+          }
+
           window.KaimingPreview = {
             ready: function () { return window.__kaimingPreviewReady; },
             metrics: metrics,
+            find: function (options) {
+              try {
+                var request = options || {};
+                var query = typeof request.query === 'string' ? request.query : '';
+                var requestID = request.requestID ? String(request.requestID) : '';
+                if (!query.length) {
+                  clearFindHighlights();
+                  return { count: 0, index: 0, requestID: requestID };
+                }
+                var outcome = findRanges(query, !!request.useRegex, !!request.caseSensitive);
+                var ranges = outcome.ranges || [];
+                if (outcome.error) {
+                  clearFindHighlights();
+                  return { count: 0, index: 0, requestID: requestID, error: outcome.error };
+                }
+                var requestedIndex = typeof request.index === 'number' ? request.index : 0;
+                var index = ranges.length ? ((requestedIndex % ranges.length) + ranges.length) % ranges.length : 0;
+                clearFindHighlights();
+                ensureFindStyle();
+                if (ranges.length) {
+                  if (window.CSS && CSS.highlights && typeof Highlight === 'function') {
+                    var all = new Highlight();
+                    ranges.forEach(function (range) { all.add(range); });
+                    CSS.highlights.set('kaiming-find', all);
+                    var current = new Highlight();
+                    current.add(ranges[index]);
+                    CSS.highlights.set('kaiming-find-current', current);
+                  } else {
+                    var selection = window.getSelection();
+                    if (selection) {
+                      selection.removeAllRanges();
+                      selection.addRange(ranges[index]);
+                    }
+                  }
+                  scrollToFindRange(ranges[index]);
+                }
+                return { count: ranges.length, index: index, requestID: requestID };
+              } catch (error) {
+                clearFindHighlights();
+                return {
+                  count: 0,
+                  index: 0,
+                  requestID: (options && options.requestID) ? String(options.requestID) : '',
+                  error: String(error && error.message ? error.message : error)
+                };
+              }
+            },
+            clearFind: function () {
+              clearFindHighlights();
+              return true;
+            },
             scrollToHeading: function (headingID) {
               if (typeof headingID !== 'string' || !headingID.length) { return false; }
               var element = document.getElementById(headingID);

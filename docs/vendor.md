@@ -27,7 +27,7 @@ Kaiming 的 Markdown 模块使用原生 TextKit 2 渲染，第三方代码全部
 许可证文本保留在 `docs/licenses/`：`LICENSE-MarkdownEngine.txt`、`LICENSE-SwiftMath.txt`、
 `highlight.js-LICENSE.txt`。
 
-## 为内嵌做的补丁（5 处机械替换 + 1 处链接补丁）
+## 为内嵌做的补丁（5 处机械替换 + 2 处功能补丁）
 
 1. `MarkdownEngineCodeBlocks/HighlightJSBridge.swift`
    - 移除 `import MarkdownEngine`（同 target 内嵌后不再需要模块导入）。
@@ -50,6 +50,16 @@ Kaiming 的 Markdown 模块使用原生 TextKit 2 渲染，第三方代码全部
      首段“像域名”（含点且扩展名不是已知文件类型）才补 `https://`；`docs/a.md`、`assets/pic.png`、
      `/abs/path`、`./x`、`../x`、`~/x`、`#anchor` 保留相对形式，交给 App 的 `MarkdownLinkRouter` 解析。
    - 升级上游时若替换以上文件，必须重新应用第 6 条，并重跑 Markdown 富内容冒烟（链接点击 / 项目树 / 图片）。
+7. 查找/替换增强（Kaiming 原生窗口需要）
+   - `MarkdownEngine/TextView/Coordinator/NativeTextViewCoordinator+Find.swift`：
+     `findQuery` / `replaceCurrent` / `replaceAll` 支持可选的 `userInfo["useRegex"]` 与
+     `userInfo["caseSensitive"]`；正则替换使用 `NSRegularExpression` 的数字捕获组模板
+     （`$1` / `$2` / `$0`；ICU 的命名组 `${name}` 在该 API 中不会被展开，保持字面量）。
+     无匹配、零长度匹配、无效正则分别处理；`findResults` 回传 `count`、`currentIndex` 与
+     可选的 `error`（中文错误文案），宿主 UI 据此显示「x/y」或错误提示。
+   - 修正 `replaceAll` 的 `shouldChangeText(inRanges:replacementStrings:)` 参数顺序：
+     按 AppKit 契约传升序 range，写回时仍从后往前，避免多段替换的索引偏移。
+   - 升级上游时若替换该文件，必须重新应用第 7 条；App 侧检查清单见 `docs/testing.md` 第 6 节。
 
 ## 升级步骤
 

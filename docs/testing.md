@@ -38,6 +38,9 @@ APP=build/dd/Build/Products/Debug/Kaiming.app
 # --snapshot-fake-capture 用合成图片填充“刚截取的画面”快捷条，便于无 TCC 权限时验收
 "$APP/Contents/MacOS/Kaiming" --snapshot-clipboard-picker /tmp/picker.png
 "$APP/Contents/MacOS/Kaiming" --snapshot-markdown /tmp/markdown.png
+"$APP/Contents/MacOS/Kaiming" --snapshot-markdown /tmp/find.png --markdown-find [--markdown-find-query 词] [--markdown-find-regex] [--markdown-find-replacement 词] [--markdown-find-replace-all]
+"$APP/Contents/MacOS/Kaiming" --snapshot-markdown /tmp/preview-find.png --markdown-render-preview --markdown-find --markdown-find-query 词
+KAIMING_PREVIEW_CLICK_LINK=1 "$APP/Contents/MacOS/Kaiming" --snapshot-markdown /tmp/link.png --markdown-file /abs/a.md --markdown-render-preview  # 自动点击正文首个链接，验证内链留在预览中
 "$APP/Contents/MacOS/Kaiming" --snapshot-settings /tmp/settings.png [--snapshot-settings-tab general|permissions|screenshot|clipboard|markdown|shortcuts|about]
 "$APP/Contents/MacOS/Kaiming" --capture-test full      # 真实全屏截图（本次覆盖不复制，不改持久化设置）
 "$APP/Contents/MacOS/Kaiming" --capture-test full --capture-test-copy  # 显式验证截图→剪贴板链路
@@ -78,7 +81,8 @@ log show --info --debug --last 5m --predicate 'subsystem == "com.kaiming.app"' -
 
 ### 窗口
 - [ ] ⌥⇧W 后鼠标悬停高亮单个窗口；点击只截该窗口，不带背景。
-- [ ] 本应用自己的窗口/菜单栏不会被选中。
+- [ ] 默认（「截图时隐藏 Kaiming 窗口」关闭）本应用窗口也可被选中/截入；开启后本应用自己的窗口/菜单栏不会被选中。
+- [ ] 设置 → 截图 → 行为新增「截图时隐藏 Kaiming 窗口」，默认关闭；关闭时在 Markdown 窗口里触发截图，冻结画面保留 Markdown 内容，开启后该内容从截图中消失。
 
 ### 全屏
 - [ ] ⌥⇧F 截取鼠标所在屏幕，无覆盖层，直接完成。
@@ -145,6 +149,11 @@ log show --info --debug --last 5m --predicate 'subsystem == "com.kaiming.app"' -
 - [ ] 超长文档滚动/输入无明显卡顿。
 - [ ] 本地图片（相对/绝对路径）、远程图片渲染；缺失图片保留源码。
 - [ ] 内部链接（相对 .md/文本/图片）在应用内打开；外部 http(s) 浏览器打开。
+- [ ] 渲染预览中的内部链接留在预览模式跳转：切换到目标 `.md` 的渲染预览（标题栏文件名/大纲同步更新），不弹出外部应用窗口；文本/图片内链进入应用内只读预览。
+- [ ] 编辑器/渲染预览内按 ⌘F 出现查找条；Enter/⌘G 下一个、⇧⌘G 上一个、Esc 关闭；`Aa` 区分大小写、`.*` 正则；匹配总数与当前序号实时显示。
+- [ ] 编辑器查找替换：「替换」改当前项、「全部替换」一次改完且一次 ⌘Z 可撤销；正则替换支持 `$1` 捕获组；无效正则显示错误提示而不是静默 0 结果。
+- [ ] 渲染预览查找：所有匹配高亮、当前项更强并自动滚动到可见位置；替换按钮禁用并提示「渲染预览只读，替换请在编辑模式进行」。
+- [ ] 切换编辑 ↔ 渲染预览时，查找条在新目标上重查；关闭查找后高亮清除。
 - [ ] 内容导航只显示标题大纲（无链接卡片/HTML 预览/刷新按钮）；点击标题时编辑器滚动到对应位置，渲染预览打开时预览滚动到对应标题并短暂高亮。
 - [ ] 表格单元格内的行内代码/加粗/链接正确渲染（不出现反引号源码）。
 - [ ] 编辑器与渲染预览内容区不显示滚动条，但滚轮/触控板仍可滚动。
