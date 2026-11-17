@@ -67,6 +67,14 @@ enum ScreenGeometry {
         )
     }
 
+    /// 两个矩形是否近似相等（用于把 SCK 显示器几何位置回退匹配到 `NSScreen`）。
+    static func isApproximatelyEqual(_ lhs: CGRect, _ rhs: CGRect, tolerance: CGFloat = 1) -> Bool {
+        abs(lhs.minX - rhs.minX) <= tolerance
+            && abs(lhs.minY - rhs.minY) <= tolerance
+            && abs(lhs.width - rhs.width) <= tolerance
+            && abs(lhs.height - rhs.height) <= tolerance
+    }
+
     /// 全局坐标 → 屏幕局部坐标（屏幕左下角为原点）。
     static func localRect(fromGlobal rect: CGRect, screenFrame: CGRect) -> CGRect {
         CGRect(

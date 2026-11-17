@@ -440,7 +440,7 @@ private struct MarkdownSettingsPane: View {
                 Text("Markdown 编辑器使用原生 TextKit 2 渲染，采用 GitHub 浅色/深色配色；渲染预览使用 WebView，支持 HTML 块、Mermaid 图表与导出 PDF。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("Markdown 窗口从菜单栏面板右上角按钮或 ⌥⇧M 打开，拥有独立的 Window scene。")
+                Text("Markdown 窗口从菜单栏面板右上角按钮或 \(HotKeyAction.openMarkdown.displayString) 打开，拥有独立的 Window scene。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -455,6 +455,12 @@ private struct ShortcutSettingsPane: View {
     @EnvironmentObject private var settings: SettingsStore
     @ObservedObject private var hotKeyManager = HotKeyManager.shared
 
+    /// 编辑中的组合键；点「保存快捷键」后才写回设置并重新注册。
+    @State private var draft: [HotKeyAction: HotKeyBinding] = [:]
+    @State private var recordingAction: HotKeyAction?
+    @State private var savedNotice = false
+    @State private var noticeTask: Task<Void, Never>?
+
     var body: some View {
         Form {
             Section("全局快捷键") {
@@ -463,21 +469,24 @@ private struct ShortcutSettingsPane: View {
                         HotKeyManager.shared.reload()
                     }
 
+                Text("点击右侧组合键后直接按下新按键，按 Esc 取消；录入结果显示在按钮上，点「保存快捷键」后生效。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("组合键") {
                 ForEach(HotKeyAction.allCases) { action in
-                    LabeledContent(action.title) {
-                        Text(action.displayString)
-                            .font(.system(.body, design: .monospaced))
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 2)
-                            .background(
-                                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                    .fill(Color.secondary.opacity(0.12))
-                            )
-                    }
+                    row(for: action)
                 }
             }
 
-            if !hotKeyManager.failures.isEmpty {
+            if let conflictMessage {
+                Section("组合键冲突") {
+                    Label(conflictMessage, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            } else if !hotKeyManager.failures.isEmpty {
                 Section("注册失败") {
                     ForEach(Array(hotKeyManager.failures.keys), id: \.self) { action in
                         Label(
@@ -491,16 +500,166 @@ private struct ShortcutSettingsPane: View {
             }
 
             Section {
-                Text("⌥⇧ 组合键避开系统自带的 ⌘⇧3 / ⌘⇧4 / ⌘⇧5。若与其他应用冲突，可在该应用中调整或在此关闭全局快捷键。")
+                HStack(spacing: 10) {
+                    Button("恢复全部默认") {
+                        resetDraftToDefaults()
+                    }
+                    .disabled(!hasCustomDraft)
+
+                    Spacer(minLength: 8)
+
+                    if savedNotice {
+                        Label("已保存并生效", systemImage: "checkmark.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                    }
+
+                    Button("保存快捷键") {
+                        save()
+                    }
+                    .disabled(!isDirty || conflictMessage != nil)
+                    .keyboardShortcut("s", modifiers: .command)
+                }
+
+                Text("组合键至少需要包含 ⌘、⌥ 或 ⌃ 之一；默认的 ⌥⇧ 系列避开了系统自带的 ⌘⇧3 / ⌘⇧4 / ⌘⇧5。若被系统或其他应用占用，保存后会在上方提示。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-
-                Button("重新注册快捷键") {
-                    HotKeyManager.shared.reload()
-                }
             }
         }
         .formStyle(.grouped)
+        .onAppear {
+            syncDraftFromSettings()
+        }
+        .onChange(of: settings.hotKeyBindings) { _, _ in
+            guard recordingAction == nil else { return }
+            syncDraftFromSettings()
+        }
+        .onDisappear {
+            stopRecording()
+            noticeTask?.cancel()
+            noticeTask = nil
+        }
+    }
+
+    // MARK: - 行
+
+    private func row(for action: HotKeyAction) -> some View {
+        let binding = draft[action] ?? action.defaultBinding
+        let conflicted = conflictingActions.contains(action)
+
+        return HStack(spacing: 10) {
+            Text(action.title)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            if conflicted {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.orange)
+                    .help("与其他动作使用了相同的组合键")
+            }
+
+            ShortcutRecorderField(
+                binding: binding,
+                isRecording: recordingAction == action,
+                onToggle: { toggleRecording(action) },
+                onCapture: { newBinding in
+                    draft[action] = newBinding
+                    stopRecording()
+                },
+                onCancel: { stopRecording() }
+            )
+        }
+        .contentShape(Rectangle())
+    }
+
+    // MARK: - 录制
+
+    private func toggleRecording(_ action: HotKeyAction) {
+        if recordingAction == action {
+            stopRecording()
+            return
+        }
+        if recordingAction != nil {
+            stopRecording()
+        }
+        recordingAction = action
+        // 录制期间先注销全局热键，否则按下已有组合键会先触发原来的动作。
+        HotKeyManager.shared.suspend()
+    }
+
+    private func stopRecording() {
+        guard recordingAction != nil else { return }
+        recordingAction = nil
+        HotKeyManager.shared.resume()
+    }
+
+    // MARK: - 草稿
+
+    private func syncDraftFromSettings() {
+        draft = Dictionary(
+            uniqueKeysWithValues: HotKeyAction.allCases.map { ($0, settings.binding(for: $0)) }
+        )
+    }
+
+    private func resetDraftToDefaults() {
+        draft = Dictionary(
+            uniqueKeysWithValues: HotKeyAction.allCases.map { ($0, $0.defaultBinding) }
+        )
+    }
+
+    private var isDirty: Bool {
+        HotKeyAction.allCases.contains { action in
+            (draft[action] ?? action.defaultBinding) != settings.binding(for: action)
+        }
+    }
+
+    private var hasCustomDraft: Bool {
+        HotKeyAction.allCases.contains { action in
+            (draft[action] ?? action.defaultBinding) != action.defaultBinding
+        }
+    }
+
+    private var conflictingActions: Set<HotKeyAction> {
+        var groups: [HotKeyBinding: [HotKeyAction]] = [:]
+        for action in HotKeyAction.allCases {
+            let binding = draft[action] ?? action.defaultBinding
+            groups[binding, default: []].append(action)
+        }
+        return Set(groups.values.filter { $0.count > 1 }.flatMap { $0 })
+    }
+
+    private var conflictMessage: String? {
+        let invalid = HotKeyAction.allCases.filter { action in
+            ((draft[action] ?? action.defaultBinding).validationError != nil
+                && !conflictingActions.contains(action))
+        }
+        if let action = invalid.first,
+           let error = (draft[action] ?? action.defaultBinding).validationError {
+            return "\(action.title)：\(error)"
+        }
+        guard !conflictingActions.isEmpty else { return nil }
+        let titles = HotKeyAction.allCases
+            .filter { conflictingActions.contains($0) }
+            .map(\.title)
+            .joined(separator: "、")
+        return "以下动作使用了相同组合键，请修改后再保存：\(titles)"
+    }
+
+    private func save() {
+        guard conflictMessage == nil else { return }
+        settings.updateHotKeyBindings(draft)
+        syncDraftFromSettings()
+        showSavedNotice()
+    }
+
+    private func showSavedNotice() {
+        noticeTask?.cancel()
+        savedNotice = true
+        noticeTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_600_000_000)
+            guard !Task.isCancelled else { return }
+            savedNotice = false
+        }
     }
 }
 

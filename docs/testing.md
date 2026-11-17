@@ -12,9 +12,10 @@
 
 ```bash
 grep -rn "TODO\|FIXME\|fatalError(\"unimplemented" Kaiming --include='*.swift' | grep -v Vendor || true
-grep -rn "WKWebView\|WebKit" Kaiming --include='*.swift' || true          # 必须为空
+grep -rn "WKWebView\|WebKit" Kaiming --include='*.swift' || true          # 仅 Markdown 渲染预览 / PDF 导出允许出现
 grep -rn "CGWindowListCreateImage" Kaiming --include='*.swift' || true    # 不允许旧截图 API
 grep -rn "captureScreenshot" Kaiming --include='*.swift' || true          # 不允许 macOS 26 专属 API
+grep -rn "CGDisplayCreateImage" Kaiming --include='*.swift'               # 仅允许 SCK 缺失显示器时的兜底
 ```
 
 ## 1. 启动
@@ -45,6 +46,7 @@ KAIMING_PREVIEW_CLICK_LINK=1 "$APP/Contents/MacOS/Kaiming" --snapshot-markdown /
 "$APP/Contents/MacOS/Kaiming" --capture-test full      # 真实全屏截图（本次覆盖不复制，不改持久化设置）
 "$APP/Contents/MacOS/Kaiming" --capture-test full --capture-test-copy  # 显式验证截图→剪贴板链路
 "$APP/Contents/MacOS/Kaiming" --capture-test full --capture-test-decorate  # 显式验证「成品带窗口头部」链路
+"$APP/Contents/MacOS/Kaiming" --picker-key-test        # 打开快捷选择并投递 ↓/↓/↑，逐步把窗口截图写到 $KAIMING_PICKER_TEST_DIR
 ```
 
 `--snapshot-*` 在进程内用真实 `NSWindow + NSHostingView` 渲染，不依赖屏幕录制权限。
@@ -72,20 +74,25 @@ log show --info --debug --last 5m --predicate 'subsystem == "com.kaiming.app"' -
 ## 3. 截图
 
 ### 区域
-- [ ] ⌥⇧S 或面板按钮进入覆盖层；每块显示器都被覆盖。
+- [ ] 区域截图快捷键（默认 ⌥⇧S）或面板按钮进入覆盖层；**每块显示器都被覆盖（都变暗、都显示冻结画面）**。
 - [ ] 拖拽出现选区 + 尺寸标签；8 个手柄都能调整；选区不能拖出屏幕。
 - [ ] Esc 取消且清理所有窗口；Return/双击确认。
 - [ ] 确认后图片进入剪贴板（粘贴到备忘录验证）。
 - [ ] Retina/4K 屏截图输出为原生像素（本机 3840×2160，不是 1920×1080）。
-- [ ] 多显示器：在副屏框选，裁剪坐标正确。
+- [ ] 多显示器：副屏上**第一次按下就能直接框选**（不需要先点一下激活）；裁剪坐标正确。
+- [ ] 多显示器：副屏的覆盖层窗口也能用 Return 确认 / Esc 取消（点击后该屏成为 key window）。
+- [ ] 多显示器：某块屏无法采集时，其余屏仍可框选，覆盖层内出现「部分显示器无法截取画面」提示。
+- [ ] 多显示器排查：stderr 打印 `screens [...] captures [...] failed=[...]` 与每个覆盖层窗口的
+      `frame/visible/activeSpace`；副屏缺失时先看这些日志（SCK 是否枚举到、是否配对到 NSScreen）。
 
 ### 窗口
-- [ ] ⌥⇧W 后鼠标悬停高亮单个窗口；点击只截该窗口，不带背景。
+- [ ] 窗口截图快捷键（默认 ⌥⇧W）后鼠标悬停高亮单个窗口；点击只截该窗口，不带背景。
+- [ ] 窗口截图：副屏上的窗口能悬停高亮、能点选（第一次点击即生效）。
 - [ ] 默认（「截图时隐藏 Kaiming 窗口」关闭）本应用窗口也可被选中/截入；开启后本应用自己的窗口/菜单栏不会被选中。
 - [ ] 设置 → 截图 → 行为新增「截图时隐藏 Kaiming 窗口」，默认关闭；关闭时在 Markdown 窗口里触发截图，冻结画面保留 Markdown 内容，开启后该内容从截图中消失。
 
 ### 全屏
-- [ ] ⌥⇧F 截取鼠标所在屏幕，无覆盖层，直接完成。
+- [ ] 全屏截图快捷键（默认 ⌥⇧F）截取鼠标所在屏幕，无覆盖层，直接完成。
 
 ### 标注与后处理
 - [ ] 矩形、箭头、文字、颜色、撤销可用，标注位置与最终图一致。
@@ -172,8 +179,17 @@ log show --info --debug --last 5m --predicate 'subsystem == "com.kaiming.app"' -
 
 ## 7. 快捷键与设置
 
-- [ ] ⌥⇧S / W / F / M 全部生效（应用在后台时）。
-- [ ] 设置页显示快捷键；注册失败（被占用）时有橙色说明。
+- [ ] 默认 ⌥⇧S / W / F / C / M 全部生效（应用在后台时）。
+- [ ] 设置 → 快捷键：每行显示当前组合键，点击后变成「按下组合键…」。
+- [ ] 按下新的组合键后立即显示在按钮上（例如 ⌃⌥K），**此时还未生效**。
+- [ ] 点「保存快捷键」后新组合键生效、旧组合键失效；重启后仍保持。
+- [ ] 录制期间原有全局热键被临时注销（按 ⌥⇧S 不会触发截图，只会被录入）。
+- [ ] 录制中按 Esc 取消，按钮恢复原来的组合键。
+- [ ] 只按字母 / 只按 ⇧ 时拒绝录入，按钮显示「需含 ⌘/⌥/⌃」提示；F1–F20 可单独录入。
+- [ ] 两个动作设成同一组合键时，保存按钮禁用并提示冲突，不会写坏配置。
+- [ ] 组合键被其他应用占用时，保存后「注册失败」区出现橙色说明。
+- [ ] 剪贴板选择窗口、截图面板、Markdown 提示里的快捷键文案跟随自定义值变化。
+- [ ] 「恢复全部默认」回到 ⌥⇧ 系列（需再点保存）。
 - [ ] 关闭全局快捷键后全部失效；重新开启后恢复，无需重启。
 - [ ] 所有设置项重启后保持。
 - [ ] 「登录时自动启动」在签名构建上可注册/注销；失败时显示系统错误。
@@ -202,8 +218,10 @@ log show --info --debug --last 5m --predicate 'subsystem == "com.kaiming.app"' -
 ## 10. v1.1 新功能验收
 
 ### 剪贴板快捷选择
-- [ ] ⌥⇧C 在后台唤起 520×460 选择窗口，搜索框自动聚焦。
-- [ ] ↑/↓ 移动、Return 复制并关闭、Esc 关闭；中文输入法组合期间不抢键。
+- [ ] 剪贴板选择快捷键（默认 ⌥⇧C，自定义后跟随）在后台唤起 520×460 选择窗口，搜索框自动聚焦。
+- [ ] ↑/↓ 移动高亮、Return 复制并关闭、Esc 关闭；中文输入法组合期间不抢键。
+- [ ] 输入文字能过滤列表（方向键不移动光标而是移动选中项）。
+- [ ] `--picker-key-test` 输出的 4 张截图依次高亮第 1/2/3/2 行。
 - [ ] 搜索过滤文本/文件名/类型；空历史与无结果有提示；置顶标记正确。
 - [ ] 面板剪贴板页的「⌥⇧C」按钮可打开同一窗口。
 

@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 /// Markdown 独立窗口：原生 SwiftUI 工具栏 + TextKit 2 单栏实时渲染。
 ///
 /// 窗口由 `KaimingApp` 的 `Window(id: "markdown")` 承载，本视图自带文档模型，
-/// 所以菜单栏入口、全局快捷键（⌥⇧M）与重复打开窗口都复用同一份文档状态。
+/// 所以菜单栏入口、全局快捷键（默认 ⌥⇧M，可自定义）与重复打开窗口都复用同一份文档状态。
 @MainActor
 struct MarkdownWindowView: View {
     @EnvironmentObject private var settings: SettingsStore

@@ -71,8 +71,9 @@ start(mode:.region)
   ├─ preflight 只用于日志，不拦截（TCC 可能绑定旧构建签名）
   ├─ SCShareableContent（排除本应用）
   │    └─ displays 为空 → 视为权限问题，可操作提示（结束）
-  ├─ 逐屏 SCScreenshotManager.captureImage（冻结图）
-  ├─ 显示每屏覆盖窗口（.screenSaver / canJoinAllSpaces）
+  ├─ 逐屏 SCScreenshotManager.captureImage（冻结图；单屏失败重试 → CGDisplayCreateImage 兜底）
+  ├─ 按「实际采集到的显示器」配对 NSScreen（ID → 几何位置回退）
+  ├─ 显示每屏覆盖窗口（.screenSaver / canJoinAllSpaces / stationary；先激活再置前）
   ├─ 拖拽选区 + 8 手柄调整 + 标注
   ├─ Return 确认 / Esc 取消
   ├─ 按屏幕 pixelScale 裁剪 + 拍平
@@ -133,8 +134,10 @@ start(mode:.region)
 
 ### 剪贴板快捷选择
 
-`⌥⇧C` → `HotKeyManager` → `AppRouter.openClipboardPicker()` → `Window(id: "clipboard-picker")`。
-窗口内搜索框聚焦，↑/↓ 选择、Return 复制并关闭、Esc 关闭；关闭后在无其他可见窗口时
+`HotKeyAction.openClipboard`（默认 ⌥⇧C，可在设置 → 快捷键自定义）→ `HotKeyManager` →
+`AppRouter.openClipboardPicker()` → `Window(id: "clipboard-picker")`。
+窗口内搜索框聚焦，↑/↓ 选择、Return 复制并关闭、Esc 关闭（由 NSTextField 字段编辑器的
+`doCommandBy` 接管，中文输入法组合期间不抢键）；关闭后在无其他可见窗口时
 `NSApp.hide(nil)` 把焦点交还前一个应用，便于直接 ⌘V。
 
 ### 应用中心与 CLI

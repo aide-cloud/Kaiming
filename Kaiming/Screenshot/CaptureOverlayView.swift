@@ -31,6 +31,10 @@ final class CaptureOverlayView: NSView {
 
     override var acceptsFirstResponder: Bool { true }
 
+    /// 非 key 窗口上的第一次点击也要立刻进入框选：多屏时只有鼠标所在屏的
+    /// 覆盖层是 key window，副屏默认会吞掉这一下鼠标事件。
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         window?.acceptsMouseMovedEvents = true
@@ -70,6 +74,10 @@ final class CaptureOverlayView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         guard let controller, let frozenScreen else { return }
+        // 在副屏上点击时把这个覆盖层窗口切成 key，后续键盘确认/取消才会生效。
+        if let window, !window.isKeyWindow {
+            window.makeKey()
+        }
         window?.makeFirstResponder(self)
         controller.mouseDown(at: localPoint(event), in: frozenScreen, clickCount: event.clickCount)
         updateCursor(for: localPoint(event))

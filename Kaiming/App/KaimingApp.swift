@@ -27,7 +27,7 @@ struct KaimingApp: App {
         .defaultPosition(.center)
         .windowResizability(.contentMinSize)
 
-        // 剪贴板快捷选择（⌥⇧C）：独立小窗口，支持键盘上下选择 + Enter 复制。
+        // 剪贴板快捷选择（默认 ⌥⇧C，可自定义）：独立小窗口，支持键盘上下选择 + Enter 复制。
         Window("剪贴板 — Kaiming", id: "clipboard-picker") {
             ClipboardPickerView()
                 .environmentObject(settings)

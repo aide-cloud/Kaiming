@@ -116,16 +116,37 @@ final class ScreenshotCoordinator: ObservableObject {
                 showsCursor: settings.captureCursor,
                 hideOwnWindows: settings.screenshotHideOwnWindows
             )
-            let images = Dictionary(uniqueKeysWithValues: prepared.displays.map { ($0.displayID, $0.image) })
-            let frozenScreens: [CaptureOverlayController.FrozenScreen] = entries.compactMap { entry in
-                guard let image = images[entry.displayID], image.width > 0, image.height > 0 else {
+            // 以「真正采集到的显示器」为准建立覆盖层：先按 displayID 配对 NSScreen，
+            // 对不上时再按屏幕几何位置回退，避免副屏因为 ID 不一致而没有覆盖层。
+            #if DEBUG
+            let screenSummary = screens
+                .map { "\(displayID(for: $0) ?? 0):\($0.frame.origin.x),\($0.frame.origin.y),\($0.frame.width)x\($0.frame.height)" }
+                .joined(separator: " ")
+            let captureSummary = prepared.displays
+                .map { "\($0.displayID):\($0.image.width)x\($0.image.height)" }
+                .joined(separator: " ")
+            NSLog("Kaiming debug: screens [\(screenSummary)] captures [\(captureSummary)] failed=\(prepared.failedDisplays.keys.sorted())")
+            #endif
+            let mainScreenFrame = NSScreen.main?.frame ?? screens[0].frame
+            let frozenScreens: [CaptureOverlayController.FrozenScreen] = prepared.displays.compactMap { capture in
+                guard capture.image.width > 0, capture.image.height > 0 else { return nil }
+                let matchedScreen = entries.first(where: { $0.displayID == capture.displayID })?.screen
+                    ?? Self.screen(
+                        matching: capture.cgFrame,
+                        in: screens,
+                        mainScreenFrame: mainScreenFrame
+                    )
+                guard let matchedScreen else {
+                    Log.screenshot.error(
+                        "Display \(capture.displayID, privacy: .public) has no matching NSScreen; overlay skipped"
+                    )
                     return nil
                 }
-                let scale = CGFloat(image.width) / max(entry.screen.frame.width, 1)
+                let scale = CGFloat(capture.image.width) / max(matchedScreen.frame.width, 1)
                 return CaptureOverlayController.FrozenScreen(
-                    screen: entry.screen,
-                    displayID: entry.displayID,
-                    image: image,
+                    screen: matchedScreen,
+                    displayID: capture.displayID,
+                    image: capture.image,
                     scale: scale
                 )
             }
@@ -134,6 +155,13 @@ final class ScreenshotCoordinator: ObservableObject {
             }
             if mode == .window, prepared.windows.isEmpty {
                 throw ScreenshotError.noWindows
+            }
+
+            let unavailableScreens = prepared.failedDisplays
+            if !unavailableScreens.isEmpty {
+                Log.screenshot.error(
+                    "Some displays could not be captured: \(unavailableScreens, privacy: .public)"
+                )
             }
 
             switch mode {
@@ -180,6 +208,12 @@ final class ScreenshotCoordinator: ObservableObject {
                 }
                 activeOverlay = controller
                 controller.present()
+                if !unavailableScreens.isEmpty {
+                    let names = unavailableScreens.values
+                        .sorted()
+                        .joined(separator: "；")
+                    controller.presentNotice("部分显示器无法截取画面，仅可用屏幕可框选：\(names)", isError: true)
+                }
             }
         } catch {
             isCapturing = false
@@ -242,6 +276,10 @@ final class ScreenshotCoordinator: ObservableObject {
 
         AppState.shared.recordCapture(nsImage)
 
+        #if DEBUG
+        NSLog("Kaiming debug: capture finished mode=\(mode.rawValue) size=\(image.width)x\(image.height) problems=\(problems)")
+        #endif
+
         if problems.isEmpty {
             AppState.shared.flash(successMessage(settings: settings, copyToClipboard: copyToClipboard), kind: .success)
             Log.screenshot.info(
@@ -302,6 +340,9 @@ final class ScreenshotCoordinator: ObservableObject {
         let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         AppState.shared.flash(message, kind: .error)
         Log.screenshot.error("Capture aborted: \(error.localizedDescription, privacy: .public)")
+        #if DEBUG
+        NSLog("Kaiming debug: capture aborted: \(message)")
+        #endif
 
         if let screenshotError = error as? ScreenshotError, screenshotError.isPermissionRelated {
             // 实际 SCK 失败才视为权限问题：重新探测真实能力，并引导用户到唯一的「权限」页。
@@ -340,5 +381,18 @@ final class ScreenshotCoordinator: ObservableObject {
 
     private func screen(containing point: CGPoint, in screens: [NSScreen]) -> NSScreen? {
         screens.first { $0.frame.contains(point) }
+    }
+
+    /// displayID 与 NSScreen 对不上时，用 SCK 的全局几何位置回退匹配屏幕。
+    private static func screen(
+        matching cgFrame: CGRect,
+        in screens: [NSScreen],
+        mainScreenFrame: CGRect
+    ) -> NSScreen? {
+        let appKitFrame = ScreenGeometry.appKitRect(
+            fromCGWindowFrame: cgFrame,
+            mainScreenFrame: mainScreenFrame
+        )
+        return screens.first { ScreenGeometry.isApproximatelyEqual($0.frame, appKitFrame) }
     }
 }

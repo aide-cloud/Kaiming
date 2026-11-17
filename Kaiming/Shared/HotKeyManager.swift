@@ -32,30 +32,32 @@ enum HotKeyAction: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// Carbon 虚拟键码（kVK_* 常量）。
-    var keyCode: UInt32 {
-        switch self {
-        case .captureRegion: UInt32(kVK_ANSI_S)
-        case .captureWindow: UInt32(kVK_ANSI_W)
-        case .captureFullScreen: UInt32(kVK_ANSI_F)
-        case .openClipboard: UInt32(kVK_ANSI_C)
-        case .openMarkdown: UInt32(kVK_ANSI_M)
-        }
-    }
-
     /// 默认组合：⌥⇧ + 字母。
-    var carbonModifiers: UInt32 {
-        UInt32(optionKey | shiftKey)
+    var defaultBinding: HotKeyBinding {
+        let modifiers = UInt32(optionKey | shiftKey)
+        return switch self {
+        case .captureRegion:
+            HotKeyBinding(keyCode: UInt32(kVK_ANSI_S), modifiers: modifiers)
+        case .captureWindow:
+            HotKeyBinding(keyCode: UInt32(kVK_ANSI_W), modifiers: modifiers)
+        case .captureFullScreen:
+            HotKeyBinding(keyCode: UInt32(kVK_ANSI_F), modifiers: modifiers)
+        case .openClipboard:
+            HotKeyBinding(keyCode: UInt32(kVK_ANSI_C), modifiers: modifiers)
+        case .openMarkdown:
+            HotKeyBinding(keyCode: UInt32(kVK_ANSI_M), modifiers: modifiers)
+        }
     }
 
+    /// 当前生效的组合键（来自设置；未自定义时取默认值）。
+    @MainActor
+    var binding: HotKeyBinding {
+        SettingsStore.shared.binding(for: self)
+    }
+
+    @MainActor
     var displayString: String {
-        switch self {
-        case .captureRegion: "⌥⇧S"
-        case .captureWindow: "⌥⇧W"
-        case .captureFullScreen: "⌥⇧F"
-        case .openClipboard: "⌥⇧C"
-        case .openMarkdown: "⌥⇧M"
-        }
+        binding.displayString
     }
 }
 
@@ -113,6 +115,8 @@ final class HotKeyManager: ObservableObject {
     private var hotKeyRefs: [EventHotKeyRef] = []
     private var eventHandler: EventHandlerRef?
     private var isInstalled = false
+    /// 录制快捷键期间暂停注册，避免按下已有组合键时先触发原来的全局动作。
+    private var isSuspended = false
 
     private init() {}
 
@@ -146,6 +150,22 @@ final class HotKeyManager: ObservableObject {
         registerAll()
     }
 
+    /// 进入录制状态：临时注销全部全局热键，让设置页能收到组合键本身。
+    func suspend() {
+        guard !isSuspended else { return }
+        isSuspended = true
+        unregisterAll()
+        failures = [:]
+        Log.hotkey.info("Global hotkeys suspended for recording")
+    }
+
+    /// 结束录制并恢复到设置中的组合键。
+    func resume() {
+        guard isSuspended else { return }
+        isSuspended = false
+        registerAll()
+    }
+
     func uninstall() {
         unregisterAll()
         if let eventHandler {
@@ -167,18 +187,31 @@ final class HotKeyManager: ObservableObject {
 
     private func registerAll() {
         unregisterAll()
+        guard !isSuspended else { return }
         guard SettingsStore.shared.hotkeysEnabled else {
             Log.hotkey.info("Global hotkeys disabled in settings")
             return
         }
 
         var newFailures: [HotKeyAction: String] = [:]
+        var ownerByBinding: [HotKeyBinding: HotKeyAction] = [:]
         for action in HotKeyAction.allCases {
+            let binding = SettingsStore.shared.binding(for: action)
+            if let error = binding.validationError {
+                newFailures[action] = "快捷键 \(binding.displayString) 不可用：\(error)"
+                continue
+            }
+            if let owner = ownerByBinding[binding] {
+                newFailures[action] = "快捷键 \(binding.displayString) 与「\(owner.title)」重复"
+                continue
+            }
+            ownerByBinding[binding] = action
+
             var ref: EventHotKeyRef?
             let hotKeyID = EventHotKeyID(signature: Self.signature, id: action.registrationID)
             let status = RegisterEventHotKey(
-                action.keyCode,
-                action.carbonModifiers,
+                binding.keyCode,
+                binding.modifiers,
                 hotKeyID,
                 GetApplicationEventTarget(),
                 0,
@@ -187,9 +220,9 @@ final class HotKeyManager: ObservableObject {
             if status == noErr, let ref {
                 hotKeyRefs.append(ref)
                 HotKeyBridge.shared.actionForID[action.registrationID] = action
-                Log.hotkey.info("Registered \(action.rawValue, privacy: .public) as \(action.displayString, privacy: .public)")
+                Log.hotkey.info("Registered \(action.rawValue, privacy: .public) as \(binding.displayString, privacy: .public)")
             } else {
-                newFailures[action] = "快捷键 \(action.displayString) 可能已被其他应用占用"
+                newFailures[action] = "快捷键 \(binding.displayString) 可能已被其他应用占用"
                 Log.hotkey.error("RegisterEventHotKey failed for \(action.rawValue, privacy: .public): \(status, privacy: .public)")
             }
         }

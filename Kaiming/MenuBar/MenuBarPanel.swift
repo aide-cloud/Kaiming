@@ -53,7 +53,7 @@ struct MenuBarPanel: View {
                     .frame(width: 26, height: 26)
             }
             .buttonStyle(.borderless)
-            .help("Markdown 编辑器 (⌥⇧M)")
+            .help("Markdown 编辑器 (\(HotKeyAction.openMarkdown.displayString))")
         }
         .padding(.horizontal, 14)
         .padding(.top, 12)

@@ -62,6 +62,9 @@ enum ScreenCaptureService {
     struct DisplayCapture: Sendable {
         let displayID: CGDirectDisplayID
         let image: CGImage
+        /// 该显示器在全局点坐标下的位置（CG 坐标，原点在主屏左上角、y 向下）。
+        /// 用于在 displayID 对不上时按几何位置回退匹配 `NSScreen`。
+        let cgFrame: CGRect
     }
 
     struct WindowDescriptor: Sendable, Identifiable {
@@ -76,6 +79,11 @@ enum ScreenCaptureService {
     struct PreparedContent: Sendable {
         let displays: [DisplayCapture]
         let windows: [WindowDescriptor]
+        /// SCK 里没有返回的显示器（扩展坞 / 虚拟显示器 / 刚唤醒的屏幕）。
+        let missingDisplayIDs: [CGDirectDisplayID]
+        /// 采集失败但重试后仍不可用的显示器 → 原因。
+        let failedDisplays: [CGDirectDisplayID: String]
+
     }
 
     /// 菜单栏、Dock、控制中心等系统 UI 的 bundle id；即使 windowLayer 为 0 也一并排除。
@@ -216,6 +224,9 @@ enum ScreenCaptureService {
 
     /// 一次性获取屏幕内容、冻结所有目标显示器，并（窗口模式时）列出候选窗口。
     ///
+    /// 单块显示器失败不会中断整次截图：其余显示器照常冻结，失败/缺失的显示器
+    /// 记录下来交给调用方决定（多屏下不能因为副屏异常就整张图都截不了）。
+    ///
     /// - Parameters:
     ///   - displayIDs: 需要冻结的显示器；传空数组表示全部。
     ///   - includeWindows: 是否枚举窗口模式候选窗口。
@@ -239,46 +250,104 @@ enum ScreenCaptureService {
         let ownBundleID = Bundle.main.bundleIdentifier
         let excludedApplications = hideOwnWindows ? ownApplications(in: content) : []
 
+        Log.screenshot.info(
+            "SCShareableContent displays=\(content.displays.map(\.displayID), privacy: .public) requested=\(displayIDs, privacy: .public)"
+        )
+
         var captures: [DisplayCapture] = []
+        var failedDisplays: [CGDirectDisplayID: String] = [:]
+
+        // 1) 先按 SCK 逐个显示器冻结；单块失败只记录，不中断。
         for display in content.displays {
             guard displayIDs.isEmpty || displayIDs.contains(display.displayID) else { continue }
-
-            let filter = SCContentFilter(
-                display: display,
-                excludingApplications: excludedApplications,
-                exceptingWindows: []
-            )
-            let (configuration, metrics) = makeDisplayConfiguration(
-                display: display,
-                filter: filter,
-                showsCursor: showsCursor
-            )
             do {
-                let image = try await SCScreenshotManager.captureImage(
-                    contentFilter: filter,
-                    configuration: configuration
+                let image = try await captureDisplay(
+                    display,
+                    excludedApplications: excludedApplications,
+                    showsCursor: showsCursor
                 )
-                captures.append(DisplayCapture(displayID: display.displayID, image: image))
-                logDisplayCapture(
-                    display: display,
-                    filter: filter,
-                    metrics: metrics,
-                    configuration: configuration,
-                    output: image
-                )
+                captures.append(DisplayCapture(
+                    displayID: display.displayID,
+                    image: image,
+                    cgFrame: display.frame
+                ))
             } catch {
+                failedDisplays[display.displayID] = error.localizedDescription
                 Log.screenshot.error(
                     "Display \(display.displayID, privacy: .public) capture failed: \(error.localizedDescription, privacy: .public)"
                 )
-                throw ScreenshotError.displayCaptureFailed(
-                    displayID: display.displayID,
-                    message: error.localizedDescription
+            }
+        }
+
+        // 2) 缺失 / 失败的显示器重试一次：扩展坞、刚唤醒的屏幕在首次枚举时
+        //    可能还不在 SCShareableContent 里。
+        let captured = Set(captures.map(\.displayID))
+        let missing = displayIDs.filter { !captured.contains($0) }
+        var missingDisplayIDs: Set<CGDirectDisplayID> = []
+
+        if !missing.isEmpty {
+            Log.screenshot.info("Retrying displays missing from SCK: \(missing, privacy: .public)")
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            let retried = try? await loadShareableContent()
+            for displayID in missing {
+                guard let display = retried?.displays.first(where: { $0.displayID == displayID }) else {
+                    missingDisplayIDs.insert(displayID)
+                    continue
+                }
+                let retriedExclusions = retried.map {
+                    hideOwnWindows ? ownApplications(in: $0) : []
+                } ?? []
+                if let image = try? await captureDisplay(
+                    display,
+                    excludedApplications: retriedExclusions,
+                    showsCursor: showsCursor
+                ) {
+                    captures.append(DisplayCapture(
+                        displayID: displayID,
+                        image: image,
+                        cgFrame: display.frame
+                    ))
+                    failedDisplays[displayID] = nil
+                    Log.screenshot.info("Retried display \(displayID, privacy: .public) captured")
+                } else {
+                    failedDisplays[displayID] = "ScreenCaptureKit 重试后仍无法采集"
+                }
+            }
+        }
+
+        // 3) 仍然拿不到画面的显示器用 CGDisplayCreateImage 兜底：部分扩展坞 /
+        //    虚拟显示器不会出现在 SCShareableContent.displays 中，但仍是普通
+        //    CoreGraphics 显示器。兜底失败则保留在 failures 里由调用方提示。
+        let stillMissing = displayIDs.filter { id in
+            !captures.contains(where: { $0.displayID == id })
+        }
+        for displayID in stillMissing {
+            if let image = legacyDisplayImage(displayID) {
+                let bounds = CGDisplayBounds(displayID)
+                captures.append(DisplayCapture(
+                    displayID: displayID,
+                    image: image,
+                    cgFrame: bounds
+                ))
+                failedDisplays[displayID] = nil
+                Log.screenshot.info("Display \(displayID, privacy: .public) captured via CGDisplayCreateImage fallback")
+            } else {
+                if failedDisplays[displayID] == nil {
+                    failedDisplays[displayID] = "该显示器没有出现在可采集列表里（扩展坞 / 虚拟显示器）"
+                }
+                missingDisplayIDs.insert(displayID)
+                Log.screenshot.error(
+                    "Display \(displayID, privacy: .public) unavailable for capture after retry and fallback"
                 )
             }
         }
 
         guard !captures.isEmpty else {
-            throw ScreenshotError.noDisplay
+            let firstFailure = failedDisplays.values.first
+            throw ScreenshotError.displayCaptureFailed(
+                displayID: displayIDs.first ?? 0,
+                message: firstFailure ?? "没有可截取的显示器"
+            )
         }
 
         var windowDescriptors: [WindowDescriptor] = []
@@ -293,9 +362,50 @@ enum ScreenCaptureService {
         }
 
         Log.screenshot.info(
-            "Prepared \(captures.count, privacy: .public) displays, \(windowDescriptors.count, privacy: .public) windows, hideOwnWindows=\(hideOwnWindows, privacy: .public)"
+            "Prepared \(captures.count, privacy: .public) displays, \(windowDescriptors.count, privacy: .public) windows, hideOwnWindows=\(hideOwnWindows, privacy: .public), missing=\(missingDisplayIDs, privacy: .public)"
         )
-        return PreparedContent(displays: captures, windows: windowDescriptors)
+        return PreparedContent(
+            displays: captures,
+            windows: windowDescriptors,
+            missingDisplayIDs: missingDisplayIDs.sorted(),
+            failedDisplays: failedDisplays
+        )
+    }
+
+    /// 冻结单块显示器（SCK）。
+    private static func captureDisplay(
+        _ display: SCDisplay,
+        excludedApplications: [SCRunningApplication],
+        showsCursor: Bool
+    ) async throws -> CGImage {
+        let filter = SCContentFilter(
+            display: display,
+            excludingApplications: excludedApplications,
+            exceptingWindows: []
+        )
+        let (configuration, metrics) = makeDisplayConfiguration(
+            display: display,
+            filter: filter,
+            showsCursor: showsCursor
+        )
+        let image = try await SCScreenshotManager.captureImage(
+            contentFilter: filter,
+            configuration: configuration
+        )
+        logDisplayCapture(
+            display: display,
+            filter: filter,
+            metrics: metrics,
+            configuration: configuration,
+            output: image
+        )
+        return image
+    }
+
+    /// 旧 CoreGraphics 兜底：只用于 SCK 完全看不到的显示器。
+    /// 正常路径始终走 ScreenCaptureKit，兜底会记录日志便于排查。
+    private static func legacyDisplayImage(_ displayID: CGDirectDisplayID) -> CGImage? {
+        CGDisplayCreateImage(displayID)
     }
 
     // MARK: - 长截图逐帧采集

@@ -4,6 +4,8 @@ import SwiftUI
 /// 菜单栏面板中的截图页。无参初始化，嵌入 400pt 宽面板的滚动区。
 struct ScreenshotPanelView: View {
     @EnvironmentObject private var appState: AppState
+    /// 观察设置变化，让面板里的快捷键文案跟随自定义值刷新。
+    @EnvironmentObject private var settings: SettingsStore
     @ObservedObject private var coordinator = ScreenshotCoordinator.shared
 
     @State private var recentCaptures: [RecentCapture] = []
@@ -122,11 +124,12 @@ struct ScreenshotPanelView: View {
     }
 
     private func shortcut(for mode: CaptureMode) -> String {
-        switch mode {
-        case .region: "⌥⇧S"
-        case .window: "⌥⇧W"
-        case .fullScreen: "⌥⇧F"
+        let action: HotKeyAction = switch mode {
+        case .region: .captureRegion
+        case .window: .captureWindow
+        case .fullScreen: .captureFullScreen
         }
+        return action.displayString
     }
 
     // MARK: - 最近截图

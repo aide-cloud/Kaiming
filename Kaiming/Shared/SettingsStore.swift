@@ -30,6 +30,7 @@ final class SettingsStore: ObservableObject {
         static let clipboardHistoryLimit = "kaiming.clipboard.historyLimit"
         static let clipboardPollInterval = "kaiming.clipboard.pollInterval"
         static let hotkeysEnabled = "kaiming.hotkeys.enabled"
+        static let hotKeyBindings = "kaiming.hotkeys.bindings"
         static let markdownFontSize = "kaiming.markdown.fontSize"
         static let markdownLivePreview = "kaiming.markdown.livePreview"
         static let markdownPageWidth = "kaiming.markdown.pageWidth"
@@ -105,6 +106,56 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(hotkeysEnabled, forKey: Keys.hotkeysEnabled) }
     }
 
+    /// 用户自定义的全局快捷键；未出现在字典里的动作使用默认组合键。
+    @Published private(set) var hotKeyBindings: [HotKeyAction: HotKeyBinding]
+
+    // MARK: - 快捷键绑定
+
+    func binding(for action: HotKeyAction) -> HotKeyBinding {
+        hotKeyBindings[action] ?? action.defaultBinding
+    }
+
+    /// 保存整组快捷键并立即重新注册（设置页「保存」按钮）。
+    func updateHotKeyBindings(_ bindings: [HotKeyAction: HotKeyBinding]) {
+        var normalized: [HotKeyAction: HotKeyBinding] = [:]
+        for action in HotKeyAction.allCases {
+            let binding = bindings[action] ?? action.defaultBinding
+            if binding != action.defaultBinding {
+                normalized[action] = binding
+            }
+        }
+        hotKeyBindings = normalized
+        persistHotKeyBindings()
+        HotKeyManager.shared.reload()
+        Log.hotkey.info("Hotkeys saved, custom=\(normalized.count, privacy: .public)")
+    }
+
+    func resetHotKeyBindings() {
+        hotKeyBindings = [:]
+        defaults.removeObject(forKey: Keys.hotKeyBindings)
+        HotKeyManager.shared.reload()
+        Log.hotkey.info("Hotkeys reset to defaults")
+    }
+
+    private func persistHotKeyBindings() {
+        let encoded = Dictionary(uniqueKeysWithValues: hotKeyBindings.map { ($0.key.rawValue, $0.value) })
+        guard let data = try? JSONEncoder().encode(encoded) else { return }
+        defaults.set(data, forKey: Keys.hotKeyBindings)
+    }
+
+    private static func loadHotKeyBindings(from defaults: UserDefaults) -> [HotKeyAction: HotKeyBinding] {
+        guard let data = defaults.data(forKey: Keys.hotKeyBindings),
+              let decoded = try? JSONDecoder().decode([String: HotKeyBinding].self, from: data) else {
+            return [:]
+        }
+        var result: [HotKeyAction: HotKeyBinding] = [:]
+        for (rawValue, binding) in decoded {
+            guard let action = HotKeyAction(rawValue: rawValue) else { continue }
+            result[action] = binding
+        }
+        return result
+    }
+
     @Published var markdownFontSize: Double {
         didSet { defaults.set(markdownFontSize, forKey: Keys.markdownFontSize) }
     }
@@ -145,6 +196,7 @@ final class SettingsStore: ObservableObject {
         clipboardPollInterval = defaults.object(forKey: Keys.clipboardPollInterval) as? Double ?? 0.5
 
         hotkeysEnabled = bool(Keys.hotkeysEnabled, default: true)
+        hotKeyBindings = Self.loadHotKeyBindings(from: defaults)
         markdownFontSize = defaults.object(forKey: Keys.markdownFontSize) as? Double ?? 15
         markdownLivePreview = bool(Keys.markdownLivePreview, default: true)
         let pageWidthRaw = defaults.string(forKey: Keys.markdownPageWidth) ?? MarkdownPageWidth.standard.rawValue
@@ -191,6 +243,7 @@ final class SettingsStore: ObservableObject {
         clipboardHistoryLimit = 50
         clipboardPollInterval = 0.5
         hotkeysEnabled = true
+        resetHotKeyBindings()
         markdownFontSize = 15
         markdownLivePreview = true
         markdownPageWidth = .standard

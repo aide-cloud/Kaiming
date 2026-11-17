@@ -67,6 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 AppRouter.shared.openClipboardPicker()
             }
         }
+        handlePickerKeyTest()
         if let index = ProcessInfo.processInfo.arguments.firstIndex(of: "--capture-test"),
            index + 1 < ProcessInfo.processInfo.arguments.count {
             let modeName = ProcessInfo.processInfo.arguments[index + 1]
@@ -164,6 +165,99 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     .environmentObject(AppState.shared)
             )
             snapshotViaWindow(root: root, size: CGSize(width: 900, height: 700), path: path)
+        }
+    }
+
+    /// 键盘回归验证：打开剪贴板快捷选择后，把合成的 ↓/↑ 事件投递到应用事件队列，
+    /// 走正常的事件分发（字段编辑器 → delegate），并逐步截图窗口，便于人工核对高亮移动。
+    private func handlePickerKeyTest() {
+        let args = ProcessInfo.processInfo.arguments
+        guard args.contains("--picker-key-test") else { return }
+        let directory = ProcessInfo.processInfo.environment["KAIMING_PICKER_TEST_DIR"]
+            ?? NSTemporaryDirectory()
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            AppRouter.shared.openClipboardPicker()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.6) { [weak self] in
+            guard let self else { return }
+            guard let window = NSApp.windows.first(where: {
+                $0.title.contains("剪贴板") && $0.isVisible
+            }) else {
+                NSLog("Kaiming debug: picker key test could not find picker window")
+                return
+            }
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            if let field = Self.firstTextField(in: window.contentView) {
+                window.makeFirstResponder(field)
+            }
+            NSLog("Kaiming debug: picker key test window=#\(window.windowNumber)")
+
+            self.captureWindowSnapshot(window, to: directory + "/picker-key-0-initial.png")
+            self.postKey(125, to: window) // ↓
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+                self.captureWindowSnapshot(window, to: directory + "/picker-key-1-down.png")
+                self.postKey(125, to: window) // ↓
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+                    self.captureWindowSnapshot(window, to: directory + "/picker-key-2-down.png")
+                    self.postKey(126, to: window) // ↑
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+                        self.captureWindowSnapshot(window, to: directory + "/picker-key-3-up.png")
+                        NSLog("Kaiming debug: picker key test finished")
+                    }
+                }
+            }
+        }
+    }
+
+    /// 投递到应用自己的事件队列，走与真实按键相同的分发路径（不需要辅助功能权限）。
+    private func postKey(_ keyCode: UInt16, to window: NSWindow) {
+        guard let event = NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber,
+            context: nil,
+            characters: "",
+            charactersIgnoringModifiers: "",
+            isARepeat: false,
+            keyCode: keyCode
+        ) else {
+            NSLog("Kaiming debug: failed to create key event \(keyCode)")
+            return
+        }
+        NSApp.postEvent(event, atStart: false)
+    }
+
+    static func firstTextField(in view: NSView?) -> NSTextField? {
+        guard let view else { return nil }
+        if let field = view as? NSTextField { return field }
+        for subview in view.subviews {
+            if let field = firstTextField(in: subview) { return field }
+        }
+        return nil
+    }
+
+    /// 读取窗口自带的可见位图（不依赖屏幕录制权限）。
+    private func captureWindowSnapshot(_ window: NSWindow, to path: String) {
+        guard let content = window.contentView else { return }
+        let bounds = content.bounds
+        guard let rep = content.bitmapImageRepForCachingDisplay(in: bounds) else {
+            NSLog("Kaiming debug: cannot allocate snapshot rep")
+            return
+        }
+        content.cacheDisplay(in: bounds, to: rep)
+        guard let data = rep.representation(using: .png, properties: [:]) else {
+            NSLog("Kaiming debug: cannot encode snapshot")
+            return
+        }
+        do {
+            try data.write(to: URL(fileURLWithPath: path))
+            NSLog("Kaiming debug: wrote window snapshot \(path)")
+        } catch {
+            NSLog("Kaiming debug: snapshot write failed \(error.localizedDescription)")
         }
     }
 

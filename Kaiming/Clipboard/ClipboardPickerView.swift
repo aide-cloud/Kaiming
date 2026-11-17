@@ -2,21 +2,22 @@ import AppKit
 import Combine
 import SwiftUI
 
-/// 剪贴板快捷选择窗口（⌥⇧C）：搜索 + 键盘上下选择 + Return 复制。
+/// 剪贴板快捷选择窗口：搜索 + 键盘上下选择 + Return 复制。
 ///
 /// 这是一个独立 Window scene（id: "clipboard-picker"），内容由 `ClipboardManager`
-/// 驱动；本视图不直接访问 `NSPasteboard`。
+/// 驱动；本视图不直接访问 `NSPasteboard`。打开快捷键可在设置 → 快捷键自定义。
 struct ClipboardPickerView: View {
     @ObservedObject private var manager = ClipboardManager.shared
+    /// 观察设置变化，让右上角快捷键提示跟随自定义值刷新。
+    @EnvironmentObject private var settings: SettingsStore
     @Environment(\.dismissWindow) private var dismissWindow
 
     @State private var searchText = ""
     @State private var selectedID: UUID?
     @State private var hoveredID: UUID?
     @State private var pickerWindow: NSWindow?
-    @FocusState private var isSearchFocused: Bool
-    @State private var keyMonitor = ClipboardPickerKeyMonitor()
-    @State private var focusTask: Task<Void, Never>?
+    /// 自增即请求搜索框重新获得焦点（窗口刚出现、重新成为 key window 时）。
+    @State private var searchFocusToken = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -41,8 +42,7 @@ struct ClipboardPickerView: View {
         }
         .onAppear {
             selectedID = entries.first?.id
-            installKeyboardMonitor()
-            focusSearchField()
+            requestSearchFocus()
             Log.clipboard.info("Clipboard picker appeared, entries=\(self.entries.count, privacy: .public)")
             #if DEBUG
             NSLog("Kaiming debug: clipboard picker appeared, entries=\(entries.count)")
@@ -50,8 +50,7 @@ struct ClipboardPickerView: View {
         }
         .onChange(of: pickerWindow?.windowNumber) { _, number in
             guard number != nil else { return }
-            installKeyboardMonitor()
-            focusSearchField()
+            requestSearchFocus()
             #if DEBUG
             NSLog("Kaiming debug: clipboard picker window attached #\(number ?? -1)")
             #endif
@@ -65,21 +64,13 @@ struct ClipboardPickerView: View {
             }
             selectedID = ids.first
         }
-        .onChange(of: isSearchFocused) { _, focused in
-            #if DEBUG
-            NSLog("Kaiming debug: clipboard picker search focused=\(focused)")
-            #endif
-        }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { notification in
             guard let window = notification.object as? NSWindow, window === pickerWindow else {
                 return
             }
-            focusSearchField()
+            requestSearchFocus()
         }
         .onDisappear {
-            focusTask?.cancel()
-            focusTask = nil
-            keyMonitor.remove()
             Log.clipboard.info("Clipboard picker dismissed")
             #if DEBUG
             NSLog("Kaiming debug: clipboard picker disappeared")
@@ -95,18 +86,21 @@ struct ClipboardPickerView: View {
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(.secondary)
 
-            TextField("搜索文本、文件名或类型…", text: $searchText)
-                .textFieldStyle(.plain)
-                .font(.system(size: 14))
-                .focused($isSearchFocused)
-                .onSubmit {
-                    activateSelected()
-                }
+            ClipboardPickerSearchField(
+                text: $searchText,
+                placeholder: "搜索文本、文件名或类型…",
+                focusToken: searchFocusToken,
+                onMoveSelection: { moveSelection(by: $0) },
+                onSubmit: { activateSelected() },
+                onCancel: { closePicker() }
+            )
+            .frame(maxWidth: .infinity, minHeight: 18)
+            .layoutPriority(1)
 
             if !searchText.isEmpty {
                 Button {
                     searchText = ""
-                    focusSearchField()
+                    requestSearchFocus()
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 12))
@@ -115,9 +109,10 @@ struct ClipboardPickerView: View {
                 .buttonStyle(.plain)
                 .help("清空搜索")
                 .accessibilityLabel("清空搜索")
+                .fixedSize()
             }
 
-            Text("⌥⇧C")
+            Text(HotKeyAction.openClipboard.displayString)
                 .font(.system(size: 9, weight: .medium, design: .rounded))
                 .foregroundStyle(.tertiary)
                 .padding(.horizontal, 5)
@@ -125,6 +120,7 @@ struct ClipboardPickerView: View {
                 .background(
                     Capsule().fill(Color.secondary.opacity(0.10))
                 )
+                .fixedSize()
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
@@ -441,7 +437,6 @@ struct ClipboardPickerView: View {
     }
 
     private func closePicker() {
-        keyMonitor.remove()
         let closedWindowNumber = pickerWindow?.windowNumber
         dismissWindow(id: "clipboard-picker")
 
@@ -460,70 +455,12 @@ struct ClipboardPickerView: View {
         }
     }
 
-    private func handleKeyCode(_ keyCode: UInt16) -> Bool {
-        // 中文输入法组合中不抢 Return / 方向键，交给输入法处理。
-        guard !isComposingText else { return false }
-
-        switch keyCode {
-        case 126: // ↑
-            moveSelection(by: -1)
-            return true
-        case 125: // ↓
-            moveSelection(by: 1)
-            return true
-        case 36, 76: // Return / Enter
-            activateSelected()
-            return true
-        case 53: // Esc
-            closePicker()
-            return true
-        default:
-            return false
-        }
-    }
-
-    private var isComposingText: Bool {
-        guard let window = pickerWindow,
-              let textView = window.firstResponder as? NSTextView else {
-            return false
-        }
-        return textView.hasMarkedText()
-    }
-
-    private func installKeyboardMonitor() {
-        guard let windowNumber = pickerWindow?.windowNumber else { return }
-        keyMonitor.install(windowNumber: windowNumber) { keyCode in
-            handleKeyCode(keyCode)
-        }
-    }
-
-    private func focusSearchField() {
-        guard let window = pickerWindow else {
-            DispatchQueue.main.async {
-                isSearchFocused = true
-            }
-            return
-        }
-
-        window.makeKey()
-        focusTask?.cancel()
-        focusTask = Task { @MainActor in
-            isSearchFocused = true
-            try? await Task.sleep(nanoseconds: 120_000_000)
-            guard !Task.isCancelled else { return }
-            if pickerWindow?.isKeyWindow == true {
-                isSearchFocused = true
-            }
-            #if DEBUG
-            if let window = pickerWindow {
-                let responderName = window.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
-                NSLog("Kaiming debug: clipboard picker firstResponder=\(responderName)")
-            }
-            #endif
-        }
-        #if DEBUG
-        NSLog("Kaiming debug: clipboard picker focus requested")
-        #endif
+    private func requestSearchFocus() {
+        // 让窗口成为 key 并显式激活应用：从其他 App 用快捷键唤起时，
+        // 只有窗口真正拿到键盘焦点，方向键/输入才会落到本窗口。
+        NSApp.activate(ignoringOtherApps: true)
+        pickerWindow?.makeKeyAndOrderFront(nil)
+        searchFocusToken &+= 1
     }
 
     // MARK: - 窗口绑定
@@ -547,39 +484,6 @@ private struct PickerEntry: Identifiable {
     let id: UUID
     let item: ClipboardItem
     let isCurrent: Bool
-}
-
-// MARK: - 键盘监控
-
-/// 只处理落在选择窗口内的按键，避免影响其他窗口。
-@MainActor
-private final class ClipboardPickerKeyMonitor {
-    private var token: Any?
-    private var handler: ((UInt16) -> Bool)?
-
-    func install(windowNumber: Int, handler: @escaping (UInt16) -> Bool) {
-        remove()
-        self.handler = handler
-
-        token = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
-            guard let self else { return event }
-            let keyCode = event.keyCode
-            let number = event.windowNumber
-            let consumed = MainActor.assumeIsolated { () -> Bool in
-                guard number == windowNumber else { return false }
-                return self.handler?(keyCode) ?? false
-            }
-            return consumed ? nil : event
-        }
-    }
-
-    func remove() {
-        if let token {
-            NSEvent.removeMonitor(token)
-        }
-        token = nil
-        handler = nil
-    }
 }
 
 // MARK: - 窗口读取

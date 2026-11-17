@@ -224,7 +224,7 @@ struct ClipboardPanelView: View {
                     HStack(spacing: 3) {
                         Image(systemName: "rectangle.on.rectangle")
                             .font(.system(size: 9, weight: .medium))
-                        Text("⌥⇧C")
+                        Text(HotKeyAction.openClipboard.displayString)
                             .font(.system(size: 9, weight: .medium, design: .rounded))
                     }
                     .padding(.horizontal, 5)
@@ -234,7 +234,7 @@ struct ClipboardPanelView: View {
                     )
                 }
                 .buttonStyle(.plain)
-                .help("打开剪贴板快捷选择（⌥⇧C）")
+                .help("打开剪贴板快捷选择（\(HotKeyAction.openClipboard.displayString)）")
                 .accessibilityLabel("打开剪贴板快捷选择")
 
                 Button {

@@ -149,6 +149,10 @@ final class CaptureOverlayController: NSObject {
         installKeyMonitor()
         observeSession()
 
+        // 先激活应用，再创建 / 置前覆盖层：否则从其他 App 唤起时，
+        // 只有鼠标所在屏的窗口能成为 key window。
+        NSApp.activate(ignoringOtherApps: true)
+
         for frozen in frozenScreens {
             let window = OverlayWindow(
                 contentRect: frozen.screen.frame,
@@ -158,13 +162,16 @@ final class CaptureOverlayController: NSObject {
                 screen: frozen.screen
             )
             window.level = .screenSaver
-            window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+            window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
             window.isOpaque = false
             window.backgroundColor = .clear
             window.hasShadow = false
             window.ignoresMouseEvents = false
             window.acceptsMouseMovedEvents = true
             window.isReleasedWhenClosed = false
+            window.hidesOnDeactivate = false
+            window.animationBehavior = .none
+            window.setFrame(frozen.screen.frame, display: false)
 
             let view = CaptureOverlayView(
                 frame: CGRect(origin: .zero, size: frozen.screen.frame.size),
@@ -178,20 +185,52 @@ final class CaptureOverlayController: NSObject {
             windows.append(window)
         }
 
-        NSApp.activate(ignoringOtherApps: true)
         for window in windows {
             window.orderFrontRegardless()
         }
 
         let keyIndex = frozenScreens.firstIndex(where: { $0.displayID == hintDisplayID }) ?? 0
         if windows.indices.contains(keyIndex) {
-            windows[keyIndex].makeKey()
+            windows[keyIndex].makeKeyAndOrderFront(nil)
             windows[keyIndex].makeFirstResponder(views[keyIndex])
         }
         refreshViews()
         Log.screenshot.info(
-            "Overlay presented mode=\(String(describing: self.mode), privacy: .public) screens=\(self.windows.count, privacy: .public)"
+            "Overlay presented mode=\(String(describing: self.mode), privacy: .public) screens=\(self.windows.count, privacy: .public) hint=\(self.hintDisplayID ?? 0, privacy: .public)"
         )
+        #if DEBUG
+        NSLog("Kaiming debug: overlay presented mode=\(self.mode) screens=\(self.windows.count) hint=\(self.hintDisplayID ?? 0)")
+        #endif
+
+        // 多屏下窗口可能已经创建但没有真正上屏（窗口服务器尚未完成激活/换 Space）。
+        // 下一轮 runloop 再校验一次：没上屏的窗口重新定位并置前。
+        ensureOverlayVisibility()
+    }
+
+    private func ensureOverlayVisibility() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { [weak self] in
+            guard let self, !self.isFinished, !self.windows.isEmpty else { return }
+            for (index, window) in self.windows.enumerated() {
+                guard index < self.frozenScreens.count else { continue }
+                let frozen = self.frozenScreens[index]
+                if !ScreenGeometry.isApproximatelyEqual(window.frame, frozen.screen.frame) {
+                    window.setFrame(frozen.screen.frame, display: false)
+                }
+                // 无条件再置前一次：窗口创建后如果应用还没真正激活到位，
+                // 副屏窗口可能停留在原来的 Space / 层级后面。
+                window.orderFrontRegardless()
+                let description = "Overlay window #\(window.windowNumber) display=\(frozen.displayID) frame=\(window.frame) visible=\(window.isVisible) activeSpace=\(window.isOnActiveSpace)"
+                Log.screenshot.debug("\(description, privacy: .public)")
+                #if DEBUG
+                NSLog("Kaiming debug: \(description)")
+                #endif
+            }
+        }
+    }
+
+    /// 覆盖层内的提示（多屏有屏幕无法采集时使用）。
+    func presentNotice(_ text: String, isError: Bool = false) {
+        showOverlayNotice(text, isError: isError)
     }
 
     func confirm() {

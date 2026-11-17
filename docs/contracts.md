@@ -40,7 +40,7 @@ xcodebuild -project Kaiming.xcodeproj -scheme Kaiming -configuration Debug \
 1. Swift 6 语言模式，macOS 14.0 部署目标；SwiftUI 为主，AppKit 仅用于截图覆盖层与 Carbon 快捷键。
 2. 编辑器用原生 TextKit 2 渲染；WebView 仅允许用于 Markdown 整篇渲染预览与 PDF 导出
    （系统 WKWebView，内容自包含、不联网；不引入第三方 WebView 或跨平台抽象）。
-3. 截图必须用 `SCScreenshotManager.captureImage`（ScreenCaptureKit，macOS 14+）；不得用旧 API，不做 macOS 26 专属 API。
+3. 截图必须用 `SCScreenshotManager.captureImage`（ScreenCaptureKit，macOS 14+）；不得用 `CGWindowListCreateImage` 等旧截图 API，不做 macOS 26 专属 API。唯一例外：SCK 的 `SCShareableContent.displays` 里根本没有某块显示器（部分扩展坞 / 虚拟显示器）时，允许用 `CGDisplayCreateImage(displayID)` 逐屏兜底，必须记录日志并在覆盖层里提示。
 4. 所有 `NSPasteboard` 读写串行化到专用 `DispatchQueue`，禁止并发。
 5. 壁纸/截图历史文件必须持久化到 `AppPaths` 下，不得指向临时目录。
 6. 模块间只通过 `NSPasteboard.general` 交换数据，**不得直接引用其他模块的类型**（`AppState` / `AppRouter` / `SettingsStore` / `ScreenCapturePermission` / `Log` / `AppPaths` / `CaptureMode` 是共享基础，允许使用）。
@@ -100,10 +100,20 @@ enum ScreenCapturePermission {
     func openMarkdown()
 }
 
+struct HotKeyBinding: Codable, Equatable, Hashable, Sendable {
+    var keyCode: UInt32      // Carbon kVK_*
+    var modifiers: UInt32    // cmdKey / optionKey / controlKey / shiftKey
+    var displayString: String   // 由当前键盘布局实时推导
+    var validationError: String?  // 至少需要 ⌘/⌥/⌃ 之一
+}
+
 @MainActor final class HotKeyManager: ObservableObject {
     static let shared
-    // 快捷键动作固定：⌥⇧S 区域 / ⌥⇧W 窗口 / ⌥⇧F 全屏 / ⌥⇧M Markdown
-    // 快捷键回调路径：HotKeyManager → ScreenshotCoordinator.shared.start(mode:) / AppRouter.openMarkdown()
+    // 动作：captureRegion / captureWindow / captureFullScreen / openClipboard / openMarkdown
+    // 默认组合：⌥⇧ + S/W/F/C/M；实际组合来自 SettingsStore.hotKeyBindings
+    // 回调路径：HotKeyManager → ScreenshotCoordinator.shared.start(mode:) / AppRouter.openMarkdown()
+    func suspend()   // 录制期间临时注销全部热键
+    func resume()    // 录制结束按设置重新注册
 }
 
 enum SettingsTab { case general, permissions, screenshot, clipboard, markdown, shortcuts, about }
@@ -266,12 +276,15 @@ enum AccessibilityPermission {
 ```swift
 // Clipboard
 struct ClipboardPickerView: View   // 独立 Window scene(id: "clipboard-picker")，无参
-// 全局快捷键 ⌥⇧C：HotKeyManager -> AppRouter.openClipboardPicker()
+struct ClipboardPickerSearchField: NSViewRepresentable  // NSTextField + delegate 接管 ↑/↓/Return/Esc
+// 全局快捷键（默认 ⌥⇧C，可自定义）：HotKeyManager -> AppRouter.openClipboardPicker()
 // AppRouter.registerClipboardPicker(_:)
 ```
 
 - 剪贴板选择窗口：搜索框默认聚焦；↑/↓ 移动；Return 复制并关闭；Esc 关闭；空状态提示。
-- 面板剪贴板页可增加「⌥⇧C 快速选择」提示，但不得嵌入编辑器/复杂窗口。
+- 方向键 / Return / Esc 必须由搜索框的字段编辑器（`NSTextFieldDelegate.doCommandBy`）接住，
+  不要依赖「窗口必须成为 key window + 全局事件监听」；IME 组合期间不抢键。
+- 面板剪贴板页可增加「快速选择」提示（文案读当前自定义快捷键），但不得嵌入编辑器/复杂窗口。
 
 ## 12. Markdown 目录树
 
@@ -453,3 +466,28 @@ struct PermissionStatus: Equatable, Sendable { var isGranted: Bool; var checkedA
   JS 入口为 `window.KaimingPreview.find(options)` / `.clearFind()`。
 - 渲染预览链接：`MarkdownWebPreviewView.onLinkActivated(URL) -> Bool` 返回 `true` 表示 App 内
   已处理（内部文件留在预览里跳转），`false` 时才交给 `NSWorkspace` 打开。
+
+## 25. v1.9 快捷键自定义 / 多屏覆盖层 / 选择窗口方向键
+
+- 快捷键改为可配置：`SettingsStore.hotKeyBindings`（键 `kaiming.hotkeys.bindings`，JSON
+  `[actionRawValue: {keyCode, modifiers}]`）覆盖 `HotKeyAction.defaultBinding`；
+  `HotKeyBinding.displayString` 用 `CGEvent.keyboardGetUnicodeString` 按当前键盘布局推导，
+  不落盘显示字符串。设置页「保存快捷键」才写回并 `HotKeyManager.reload()`。
+- 录制交互：点击组合键按钮进入录制态 → `HotKeyManager.suspend()` 注销全部热键 →
+  本地 keyDown 监听录下键码 + 修饰键并显示 → Esc 取消 → `resume()` 重新注册。
+  组合键必须含 ⌘/⌥/⌃ 至少一个；重复组合键在保存前拦截，注册失败仍显示在「注册失败」区。
+- 剪贴板选择窗口：搜索框改为 `NSTextField` + `NSTextFieldDelegate.doCommandBy`
+  （`moveUp:` / `moveDown:` / `insertNewline:` / `cancelOperation:`），IME 组合期间不抢键。
+- 多显示器约束：
+  - 覆盖层屏幕清单以**真正采集到的显示器**为准：先按 `NSScreenNumber == SCDisplay.displayID`
+    配对 `NSScreen`，对不上时按屏幕全局几何位置回退匹配，不能因为 ID 不一致就丢掉副屏。
+  - 单块显示器采集失败或不在 `SCShareableContent.displays` 里时：先重试一次，再尝试
+    `CGDisplayCreateImage` 兜底；仍失败只影响该屏，其余屏幕照常显示覆盖层，
+    并在覆盖层内提示「部分显示器无法截取画面」。
+  - 每块屏幕一个 `.screenSaver` 级无边框窗口；`present()` 先 `NSApp.activate` 再
+    `orderFrontRegardless`，下一轮 runloop 再校验/重排一次（`isVisible`、frame、
+    activeSpace 都写日志）。
+  - 非 key 窗口的覆盖层必须 `acceptsFirstMouse == true`，且点击时 `makeKey()`：
+    否则副屏上的第一次按下会被系统吞掉（区域拖不动、窗口点不中）。
+  - 调试：`--capture-test region` 的 stderr 会打印 `screens [...] captures [...] failed=[]`、
+    `overlay presented ...`、每个覆盖层窗口的 `frame/visible/activeSpace`，用于多屏排查。
