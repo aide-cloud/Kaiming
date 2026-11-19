@@ -35,9 +35,11 @@ APP=build/dd/Build/Products/Debug/Kaiming.app
 "$APP/Contents/MacOS/Kaiming" --open-settings          # 打开设置窗口
 "$APP/Contents/MacOS/Kaiming" --open-clipboard         # 打开剪贴板快捷选择窗口
 "$APP/Contents/MacOS/Kaiming" --open-folder /abs/path  # 模拟 CLI 打开目录树
-"$APP/Contents/MacOS/Kaiming" --snapshot-panel /tmp/panel.png [--snapshot-tab clipboard|wallpaper|apps] [--snapshot-fake-capture]
+"$APP/Contents/MacOS/Kaiming" --snapshot-panel /tmp/panel.png [--snapshot-tab clipboard|wallpaper|apps] [--snapshot-fake-capture] [--snapshot-clipboard-scope live|favorites]
 # --snapshot-fake-capture 用合成图片填充“刚截取的画面”快捷条，便于无 TCC 权限时验收
-"$APP/Contents/MacOS/Kaiming" --snapshot-clipboard-picker /tmp/picker.png
+# --snapshot-clipboard-scope 让剪贴板页直接渲染「收藏」或「实时」分区
+"$APP/Contents/MacOS/Kaiming" --snapshot-clipboard-picker /tmp/picker.png [--snapshot-clipboard-scope live|favorites]
+# 截图想用固定样例、不动真实历史时：KAIMING_SUPPORT_DIR=/tmp/kaiming-support 指向临时数据目录（仅 DEBUG 生效）
 "$APP/Contents/MacOS/Kaiming" --snapshot-markdown /tmp/markdown.png
 "$APP/Contents/MacOS/Kaiming" --snapshot-markdown /tmp/find.png --markdown-find [--markdown-find-query 词] [--markdown-find-regex] [--markdown-find-replacement 词] [--markdown-find-replace-all]
 "$APP/Contents/MacOS/Kaiming" --snapshot-markdown /tmp/preview-find.png --markdown-render-preview --markdown-find --markdown-find-query 词
@@ -118,13 +120,17 @@ log show --info --debug --last 5m --predicate 'subsystem == "com.kaiming.app"' -
 - [ ] 复制图片（截图/预览）→ 历史出现缩略图，图片文件在 `Application Support/Kaiming/Clipboard/`。
 - [ ] Finder 复制文件 → 类型为文件 URL，复制按钮能把文件放回剪贴板。
 - [ ] 相同内容连续复制不重复入栈。
-- [ ] 置顶项在超过上限后仍保留；取消置顶后恢复淘汰规则。
-- [ ] 删除单项同时删除对应图片文件；清空历史后列表为空。
-- [ ] 面板「清空历史」：点击后在原位出现内联确认卡片（不弹系统弹窗、面板不关闭）。
-- [ ] 点「清空历史」确认：计数归零、显示「暂无历史记录」、图片文件被删除，顶部出现「已清空全部历史记录」提示。
-- [ ] 点「取消」或 Esc：历史保留，回到普通「清空历史」按钮。
-- [ ] 打开面板 → 点「清空历史」→ 不确认直接收起面板 → 再次打开：不得停留在确认卡片。
-- [ ] 设置页「清空全部历史记录」仍可清空（普通窗口，允许系统确认弹窗）。
+- [ ] 面板剪贴板页有「收藏 N / 实时 N」两个 tab；复制新内容只让「实时」计数增加。
+- [ ] 实时列表里点行尾 ☆ → 该条变成收藏：出现橙色星标，「收藏」计数 +1，切到「收藏」tab 能看到它。
+- [ ] 「收藏」tab 按收藏时间倒序，行副标题显示「收藏于 …」；在收藏页点 ★ 取消收藏 → 该条从收藏页消失，回到实时列表。
+- [ ] 收藏项在超过上限后仍保留（把上限调到 10 后连续复制 20 条以上），实时列表只淘汰未收藏项。
+- [ ] 删除单项同时删除对应图片文件；只清空实时历史后列表里只剩收藏项。
+- [ ] 面板「清空实时历史」：点击后在原位出现内联确认卡片（不弹系统弹窗、面板不关闭），文案说明收藏会被保留。
+- [ ] 点确认：非收藏项计数归零、图片文件被删除，收藏项与「收藏」tab 内容不变，顶部提示说明保留了几条收藏。
+- [ ] 点「取消」或 Esc：历史保留，回到普通「清空实时历史」按钮；切 tab 也会复位确认态。
+- [ ] 打开面板 → 点「清空实时历史」→ 不确认直接收起面板 → 再次打开：不得停留在确认卡片。
+- [ ] 设置页「清空实时历史（保留收藏）」只清实时历史（普通窗口，允许系统确认弹窗）。
+- [ ] 旧版 history.json（`isPinned` 字段）启动后置顶项显示为收藏，且不再被上限淘汰。
 - [ ] 关闭「监控剪贴板变化」后不再新增；重新开启后恢复。
 - [ ] 在面板点复制不会产生重复历史（自身写入被基线跳过）。
 - [ ] 并发压测：快速 pbcopy 循环时无崩溃（串行队列生效）。
@@ -222,7 +228,9 @@ log show --info --debug --last 5m --predicate 'subsystem == "com.kaiming.app"' -
 - [ ] ↑/↓ 移动高亮、Return 复制并关闭、Esc 关闭；中文输入法组合期间不抢键。
 - [ ] 输入文字能过滤列表（方向键不移动光标而是移动选中项）。
 - [ ] `--picker-key-test` 输出的 4 张截图依次高亮第 1/2/3/2 行。
-- [ ] 搜索过滤文本/文件名/类型；空历史与无结果有提示；置顶标记正确。
+- [ ] 搜索过滤文本/文件名/类型；空历史与无结果有提示；收藏项显示橙色 ☆。
+- [ ] 快捷选择窗口有「收藏 / 实时」tab：切换后列表、计数、↑/↓ 选中范围只在当前分区内变化。
+- [ ] 「收藏」tab 空态提示「在剪贴板面板里点 ☆ 收藏」，搜索无结果时提示只在收藏里搜索。
 - [ ] 面板剪贴板页的「⌥⇧C」按钮可打开同一窗口。
 
 ### Markdown 目录树 / CLI

@@ -371,11 +371,14 @@ private struct ClipboardSettingsPane: View {
             Section("历史记录") {
                 Toggle("监控剪贴板变化", isOn: $settings.clipboardMonitoringEnabled)
                 Stepper(
-                    "最多保留 \(settings.clipboardHistoryLimit) 条",
+                    "实时最多保留 \(settings.clipboardHistoryLimit) 条",
                     value: $settings.clipboardHistoryLimit,
                     in: 10...500,
                     step: 10
                 )
+                Text("收藏项永久保留，不计入这个上限，也不会被自动淘汰。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
 
                 LabeledContent("轮询间隔") {
                     Text(String(format: "%.1f 秒", settings.clipboardPollInterval))
@@ -394,9 +397,12 @@ private struct ClipboardSettingsPane: View {
             }
 
             Section("清理") {
-                Button("清空全部历史记录", role: .destructive) {
+                Button("清空实时历史（保留收藏）", role: .destructive) {
                     ClipboardManager.shared.clearHistory()
                 }
+                Text("只删除「实时」分区里的历史记录；收藏项需要在剪贴板面板里逐条取消收藏或删除。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

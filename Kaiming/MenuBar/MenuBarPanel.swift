@@ -5,6 +5,8 @@ struct MenuBarPanel: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var settings: SettingsStore
     @Environment(\.openWindow) private var openWindow
+    /// 剪贴板页初始分区；正式启动保持默认「实时」，调试快照可显式指定。
+    var clipboardScope: ClipboardScope = .live
 
     var body: some View {
         VStack(spacing: 0) {
@@ -125,7 +127,7 @@ struct MenuBarPanel: View {
                         ScreenshotPanelView()
                     }
                 case .clipboard:
-                    ClipboardPanelView()
+                    ClipboardPanelView(initialScope: clipboardScope)
                 case .wallpaper:
                     WallpaperPanelView()
                 case .apps:

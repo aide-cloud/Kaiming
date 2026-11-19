@@ -7,6 +7,12 @@ import Foundation
 /// - 默认截图保存目录为 ~/Pictures/Kaiming，可在设置中修改。
 enum AppPaths {
     static var applicationSupport: URL {
+        #if DEBUG
+        // 调试快照 / 本地验收：KAIMING_SUPPORT_DIR 可把数据目录指到临时路径，避免污染真实历史。
+        if let override = ProcessInfo.processInfo.environment["KAIMING_SUPPORT_DIR"], !override.isEmpty {
+            return URL(fileURLWithPath: override, isDirectory: true)
+        }
+        #endif
         let base = FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)
             .first

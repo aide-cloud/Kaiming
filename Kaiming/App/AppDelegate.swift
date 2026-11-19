@@ -104,6 +104,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 
     #if DEBUG
+    /// 快照用分区：`--snapshot-clipboard-scope favorites` 渲染「收藏」页，默认「实时」。
+    private static func snapshotClipboardScope(_ args: [String]) -> ClipboardScope {
+        guard let index = args.firstIndex(of: "--snapshot-clipboard-scope"),
+              index + 1 < args.count,
+              let scope = ClipboardScope(rawValue: args[index + 1]) else {
+            return .live
+        }
+        return scope
+    }
+
     /// 调试快照：不依赖屏幕录制权限，把 SwiftUI 面板 / Markdown 窗口渲染成 PNG 后退出。
     private func handleSnapshotArguments() {
         let args = ProcessInfo.processInfo.arguments
@@ -122,7 +132,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
             let root = AnyView(
-                MenuBarPanel()
+                MenuBarPanel(clipboardScope: Self.snapshotClipboardScope(args))
                     .environmentObject(AppState.shared)
                     .environmentObject(SettingsStore.shared)
             )
@@ -133,7 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let index = args.firstIndex(of: "--snapshot-clipboard-picker"), index + 1 < args.count {
             let path = args[index + 1]
             let root = AnyView(
-                ClipboardPickerView()
+                ClipboardPickerView(initialScope: Self.snapshotClipboardScope(args))
                     .environmentObject(SettingsStore.shared)
                     .environmentObject(AppState.shared)
             )

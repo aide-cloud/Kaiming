@@ -15,9 +15,77 @@ enum ClipboardHistoryStore {
         var imageFileName: String?
         var fileURLs: [URL]
         var createdAt: Date
-        var isPinned: Bool
+        var isFavorite: Bool
+        var favoritedAt: Date?
         var sourceBundleID: String?
         var imageHash: String?
+
+        init(
+            id: UUID,
+            kind: ClipboardKind,
+            text: String?,
+            imageFileName: String?,
+            fileURLs: [URL],
+            createdAt: Date,
+            isFavorite: Bool,
+            favoritedAt: Date?,
+            sourceBundleID: String?,
+            imageHash: String?
+        ) {
+            self.id = id
+            self.kind = kind
+            self.text = text
+            self.imageFileName = imageFileName
+            self.fileURLs = fileURLs
+            self.createdAt = createdAt
+            self.isFavorite = isFavorite
+            self.favoritedAt = favoritedAt
+            self.sourceBundleID = sourceBundleID
+            self.imageHash = imageHash
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case id, kind, text, imageFileName, fileURLs, createdAt, isFavorite, favoritedAt
+            case sourceBundleID, imageHash
+            /// v1 字段：当时叫「置顶」；v2 起统一为「收藏」，读旧文件时等价迁移，写盘时镜像回写。
+            case legacyIsPinned = "isPinned"
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(UUID.self, forKey: .id)
+            kind = try container.decode(ClipboardKind.self, forKey: .kind)
+            text = try container.decodeIfPresent(String.self, forKey: .text)
+            imageFileName = try container.decodeIfPresent(String.self, forKey: .imageFileName)
+            fileURLs = try container.decodeIfPresent([URL].self, forKey: .fileURLs) ?? []
+            createdAt = try container.decode(Date.self, forKey: .createdAt)
+            if let favorite = try container.decodeIfPresent(Bool.self, forKey: .isFavorite) {
+                isFavorite = favorite
+            } else {
+                // 旧版本只有「置顶」，语义一致（永久保留、不被淘汰），直接当作收藏。
+                isFavorite = try container.decodeIfPresent(Bool.self, forKey: .legacyIsPinned) ?? false
+            }
+            favoritedAt = try container.decodeIfPresent(Date.self, forKey: .favoritedAt)
+            sourceBundleID = try container.decodeIfPresent(String.self, forKey: .sourceBundleID)
+            imageHash = try container.decodeIfPresent(String.self, forKey: .imageHash)
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(id, forKey: .id)
+            try container.encode(kind, forKey: .kind)
+            try container.encodeIfPresent(text, forKey: .text)
+            try container.encodeIfPresent(imageFileName, forKey: .imageFileName)
+            try container.encode(fileURLs, forKey: .fileURLs)
+            try container.encode(createdAt, forKey: .createdAt)
+            try container.encode(isFavorite, forKey: .isFavorite)
+            try container.encodeIfPresent(favoritedAt, forKey: .favoritedAt)
+            try container.encodeIfPresent(sourceBundleID, forKey: .sourceBundleID)
+            try container.encodeIfPresent(imageHash, forKey: .imageHash)
+            // 兼容写：旧版本只认 `isPinned`，缺了它整份历史会解码失败。收藏与旧「置顶」语义一致，
+            // 这里镜像写出，降到旧版本（或旧实例仍在运行并回写）时历史不会丢。
+            try container.encode(isFavorite, forKey: .legacyIsPinned)
+        }
     }
 
     struct StoredHistory: Codable, Sendable {
@@ -63,7 +131,8 @@ enum ClipboardHistoryStore {
                     imageFileName: storedItem.imageFileName,
                     fileURLs: storedItem.fileURLs,
                     createdAt: storedItem.createdAt,
-                    isPinned: storedItem.isPinned,
+                    isFavorite: storedItem.isFavorite,
+                    favoritedAt: storedItem.favoritedAt,
                     sourceBundleID: storedItem.sourceBundleID
                 )
             }

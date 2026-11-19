@@ -19,7 +19,10 @@ struct ClipboardItem: Identifiable, Equatable, Sendable {
     var imageFileName: String?
     var fileURLs: [URL]
     var createdAt: Date
-    var isPinned: Bool
+    /// 是否已收藏：收藏项永久保留，不计入条数上限，也不会被「清空实时历史」删除。
+    var isFavorite: Bool
+    /// 收藏时间（用于「收藏」分区排序）；未收藏为 nil。
+    var favoritedAt: Date?
     var sourceBundleID: String?
 }
 
@@ -178,26 +181,44 @@ final class ClipboardManager: ObservableObject {
     }
 
     func clearHistory() {
-        let removedImageNames = items.compactMap(\.imageFileName)
-        let removedCount = items.count
-        let hadPinned = items.contains { $0.isPinned }
+        // 「收藏」永久保留：清空只针对实时历史，收藏项及其图片文件都不动。
+        let removedItems = items.filter { !$0.isFavorite }
+        let keptFavorites = items.filter(\.isFavorite)
+        let removedImageNames = removedItems.compactMap(\.imageFileName)
 
-        items.removeAll()
-        imageHashes.removeAll()
-        currentItem = nil
-        currentText = nil
-        ClipboardThumbnailCache.shared.removeAll()
+        items = keptFavorites
+        for item in removedItems {
+            imageHashes[item.id] = nil
+            if let fileName = item.imageFileName {
+                ClipboardThumbnailCache.shared.remove(fileName: fileName)
+            }
+        }
+
+        // 当前剪贴板内容在实时历史里被删掉时，同步清掉「当前剪贴板」卡片。
+        if let current = currentItem, !keptFavorites.contains(where: { $0.id == current.id }) {
+            currentItem = nil
+            currentText = nil
+        }
+
         removeImageFiles(removedImageNames)
         persistHistory()
 
-        if removedCount == 0 {
-            AppState.shared.flash("剪贴板历史已经是空的", kind: .info)
-        } else if hadPinned {
-            AppState.shared.flash("已清空全部历史记录（包括置顶项）", kind: .success)
+        if removedItems.isEmpty {
+            AppState.shared.flash(
+                keptFavorites.isEmpty ? "剪贴板历史已经是空的" : "实时历史已经是空的，收藏项已保留",
+                kind: .info
+            )
+        } else if keptFavorites.isEmpty {
+            AppState.shared.flash("已清空全部实时历史", kind: .success)
         } else {
-            AppState.shared.flash("已清空全部历史记录", kind: .success)
+            AppState.shared.flash(
+                "已清空 \(removedItems.count) 条实时历史，收藏 \(keptFavorites.count) 条已保留",
+                kind: .success
+            )
         }
-        Log.clipboard.info("Clipboard history cleared: \(removedCount, privacy: .public) items")
+        Log.clipboard.info(
+            "Clipboard live history cleared: removed=\(removedItems.count, privacy: .public), favorites=\(keptFavorites.count, privacy: .public)"
+        )
     }
 
     func clearPasteboard() {
@@ -229,13 +250,50 @@ final class ClipboardManager: ObservableObject {
         Log.clipboard.info("Deleted clipboard history item \(removed.id.uuidString, privacy: .public)")
     }
 
-    func togglePin(_ item: ClipboardItem) {
+    func toggleFavorite(_ item: ClipboardItem) {
         guard let index = items.firstIndex(where: { $0.id == item.id }) else { return }
-        items[index].isPinned.toggle()
-        let pinned = items[index].isPinned
-        normalizeOrder()
+        items[index].isFavorite.toggle()
+        items[index].favoritedAt = items[index].isFavorite ? Date() : nil
+        let isFavorite = items[index].isFavorite
+        // 只改标记，不动实时列表的先后顺序；「收藏」分区自己按收藏时间排序。
         persistHistory()
-        Log.clipboard.info("Clipboard item \(item.id.uuidString, privacy: .public) pinned=\(pinned, privacy: .public)")
+        Log.clipboard.info(
+            "Clipboard item \(item.id.uuidString, privacy: .public) favorite=\(isFavorite, privacy: .public)"
+        )
+    }
+
+    // MARK: - 分区
+
+    /// 指定分区要展示的条目。
+    ///
+    /// - 实时：全部历史，按复制时间倒序（收藏项也在其中，靠星标区分）。
+    /// - 收藏：仅收藏项，按收藏时间倒序（老数据没有收藏时间时退回复制时间）。
+    func entries(in scope: ClipboardScope) -> [ClipboardItem] {
+        switch scope {
+        case .live:
+            return items
+        case .favorites:
+            return items.filter(\.isFavorite).sorted { lhs, rhs in
+                let lhsDate = lhs.favoritedAt ?? lhs.createdAt
+                let rhsDate = rhs.favoritedAt ?? rhs.createdAt
+                if lhsDate != rhsDate {
+                    return lhsDate > rhsDate
+                }
+                return lhs.id.uuidString < rhs.id.uuidString
+            }
+        }
+    }
+
+    func count(in scope: ClipboardScope) -> Int {
+        switch scope {
+        case .live: return items.count
+        case .favorites: return items.lazy.filter(\.isFavorite).count
+        }
+    }
+
+    /// 会被「清空实时历史」删掉、也可能被条数上限淘汰的条目数（即非收藏项）。
+    var removableHistoryCount: Int {
+        items.lazy.filter { !$0.isFavorite }.count
     }
 
     // MARK: - 事件处理
@@ -348,7 +406,8 @@ final class ClipboardManager: ObservableObject {
                 imageFileName: snapshot.imageFileName,
                 fileURLs: snapshot.fileURLs,
                 createdAt: Date(),
-                isPinned: false,
+                isFavorite: false,
+                favoritedAt: nil,
                 sourceBundleID: sourceBundleID
             )
             items.insert(item, at: 0)
@@ -389,12 +448,9 @@ final class ClipboardManager: ObservableObject {
         }
     }
 
-    /// 置顶项固定在最上方，其余按时间倒序（最新在前）。
+    /// 实时历史按复制时间倒序（最新在前）。收藏分区在 `entries(in:)` 里按收藏时间另行排序。
     private func normalizeOrder() {
         items.sort { lhs, rhs in
-            if lhs.isPinned != rhs.isPinned {
-                return lhs.isPinned
-            }
             if lhs.createdAt != rhs.createdAt {
                 return lhs.createdAt > rhs.createdAt
             }
@@ -402,17 +458,19 @@ final class ClipboardManager: ObservableObject {
         }
     }
 
-    /// 超出上限时删除最旧的非置顶项（当前剪贴板内容也受保护），并删掉对应图片。
+    /// 超出上限时删除最旧的**未收藏**项（当前剪贴板内容也受保护），并删掉对应图片。
+    /// 收藏项不计入上限，永远不会被自动淘汰。
     @discardableResult
     private func enforceHistoryLimit(persist: Bool = true) -> Bool {
         let limit = clampedLimit
-        guard items.count > limit else { return false }
+        var removableCount = items.lazy.filter { !$0.isFavorite }.count
+        guard removableCount > limit else { return false }
 
         var removedImageNames: [String] = []
         var removedCount = 0
 
-        while items.count > limit {
-            guard let index = items.lastIndex(where: { !$0.isPinned && $0.id != currentItem?.id }) else {
+        while removableCount > limit {
+            guard let index = items.lastIndex(where: { !$0.isFavorite && $0.id != currentItem?.id }) else {
                 break
             }
             let removed = items.remove(at: index)
@@ -422,6 +480,7 @@ final class ClipboardManager: ObservableObject {
                 ClipboardThumbnailCache.shared.remove(fileName: fileName)
             }
             removedCount += 1
+            removableCount -= 1
         }
 
         if !removedImageNames.isEmpty {
@@ -458,7 +517,8 @@ final class ClipboardManager: ObservableObject {
                 imageFileName: item.imageFileName,
                 fileURLs: item.fileURLs,
                 createdAt: item.createdAt,
-                isPinned: item.isPinned,
+                isFavorite: item.isFavorite,
+                favoritedAt: item.favoritedAt,
                 sourceBundleID: item.sourceBundleID,
                 imageHash: imageHashes[item.id]
             )
@@ -471,7 +531,7 @@ final class ClipboardManager: ObservableObject {
         }
 
         return ClipboardHistoryStore.StoredHistory(
-            version: 1,
+            version: 2,
             items: storedItems,
             imageHashes: storedHashes
         )

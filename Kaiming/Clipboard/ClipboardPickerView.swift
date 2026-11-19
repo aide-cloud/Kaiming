@@ -16,14 +16,24 @@ struct ClipboardPickerView: View {
     @State private var selectedID: UUID?
     @State private var hoveredID: UUID?
     @State private var pickerWindow: NSWindow?
+    /// 收藏 / 实时分区；与面板一致，两个 tab 搜索与键盘选择都各自生效。
+    @State private var scope: ClipboardScope
     /// 自增即请求搜索框重新获得焦点（窗口刚出现、重新成为 key window 时）。
     @State private var searchFocusToken = 0
+
+    init(initialScope: ClipboardScope = .live) {
+        _scope = State(initialValue: initialScope)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             searchBar
                 .padding(.horizontal, 14)
                 .padding(.top, 12)
+                .padding(.bottom, 8)
+
+            scopeBar
+                .padding(.horizontal, 14)
                 .padding(.bottom, 10)
 
             Divider()
@@ -57,6 +67,12 @@ struct ClipboardPickerView: View {
         }
         .onChange(of: searchText) { _, _ in
             selectedID = entries.first?.id
+        }
+        .onChange(of: scope) { _, _ in
+            // 切分区后回到第一条，避免高亮停在不可见的条目上。
+            selectedID = entries.first?.id
+            requestSearchFocus()
+            Log.clipboard.info("Clipboard picker scope changed to \(scope.rawValue, privacy: .public)")
         }
         .onChange(of: visibleEntryIDs) { _, ids in
             if let selectedID, ids.contains(selectedID) {
@@ -134,6 +150,29 @@ struct ClipboardPickerView: View {
         )
     }
 
+    // MARK: - 分区 tab
+
+    private var scopeBar: some View {
+        HStack(spacing: 8) {
+            Picker("剪贴板分区", selection: $scope) {
+                ForEach(ClipboardScope.allCases) { scope in
+                    Text("\(scope.title) \(manager.count(in: scope))")
+                        .tag(scope)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 200)
+
+            Spacer(minLength: 0)
+
+            Text(scope == .favorites ? "收藏项永久保留，可随时取消收藏" : "实时历史按复制时间倒序")
+                .font(.system(size: 9.5))
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+        }
+    }
+
     // MARK: - 列表
 
     private var listContent: some View {
@@ -184,15 +223,15 @@ struct ClipboardPickerView: View {
                         badge("当前", color: .accentColor)
                     }
 
-                    if item.isPinned {
-                        Image(systemName: "pin.fill")
+                    if item.isFavorite {
+                        Image(systemName: "star.fill")
                             .font(.system(size: 8))
                             .foregroundStyle(.orange)
-                            .help("已置顶")
+                            .help("已收藏，永久保留")
                     }
                 }
 
-                Text("\(item.kind.title) · \(ClipboardPanelView.relativeString(since: item.createdAt))")
+                Text(rowMeta(for: item))
                     .font(.system(size: 9.5))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -273,25 +312,39 @@ struct ClipboardPickerView: View {
 
     private var emptyState: some View {
         VStack(spacing: 8) {
-            Image(systemName: hasSearch ? "magnifyingglass" : "clipboard")
+            Image(systemName: hasSearch ? "magnifyingglass" : (scope == .favorites ? "star" : "clipboard"))
                 .font(.system(size: 28, weight: .light))
                 .foregroundStyle(.tertiary)
 
-            Text(hasSearch ? "没有匹配「\(trimmedSearchText)」的记录" : "暂无剪贴板记录")
+            Text(emptyTitle)
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(.secondary)
 
-            Text(
-                hasSearch
-                    ? "可搜索文本内容、文件名，或「文本 / 图片 / 文件 / 富文本」。"
-                    : "复制文本、图片或文件后，历史会显示在这里。"
-            )
-            .font(.system(size: 10))
-            .foregroundStyle(.tertiary)
-            .multilineTextAlignment(.center)
+            Text(emptyHint)
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(24)
+    }
+
+    private var emptyTitle: String {
+        if hasSearch {
+            return "没有匹配「\(trimmedSearchText)」的记录"
+        }
+        return scope == .favorites ? "还没有收藏" : "暂无剪贴板记录"
+    }
+
+    private var emptyHint: String {
+        if hasSearch {
+            return scope == .favorites
+                ? "只在「收藏」里搜索；切到「实时」可搜全部历史。"
+                : "可搜索文本内容、文件名，或「文本 / 图片 / 文件 / 富文本」。"
+        }
+        return scope == .favorites
+            ? "在剪贴板面板里点 ☆ 收藏；收藏项永久保留、可随时移除。"
+            : "复制文本、图片或文件后，历史会显示在这里。"
     }
 
     // MARK: - 底部提示
@@ -328,19 +381,25 @@ struct ClipboardPickerView: View {
 
     // MARK: - 数据
 
-    /// 当前剪贴板内容排第一，其后是历史；当前内容若也在历史里则只显示一次。
+    /// 当前分区的内容，当前剪贴板条目排第一；实时分区里当前内容若还没进历史也会补上。
     private var allEntries: [PickerEntry] {
-        let current = manager.currentItem
-        var result: [PickerEntry] = []
+        let currentID = manager.currentItem?.id
+        var scoped = manager.entries(in: scope)
 
-        if let current {
-            let latest = manager.items.first(where: { $0.id == current.id }) ?? current
-            result.append(PickerEntry(id: latest.id, item: latest, isCurrent: true))
+        // 当前剪贴板内容排第一（它在历史里时提上来，保持与旧版一致）。
+        if let currentID, let index = scoped.firstIndex(where: { $0.id == currentID }) {
+            scoped.insert(scoped.remove(at: index), at: 0)
         }
 
-        let currentID = current?.id
-        for item in manager.items where item.id != currentID {
-            result.append(PickerEntry(id: item.id, item: item, isCurrent: false))
+        var result: [PickerEntry] = []
+        if scope == .live,
+           let current = manager.currentItem,
+           !scoped.contains(where: { $0.id == current.id }) {
+            result.append(PickerEntry(id: current.id, item: current, isCurrent: true))
+        }
+
+        for item in scoped {
+            result.append(PickerEntry(id: item.id, item: item, isCurrent: item.id == currentID))
         }
         return result
     }
@@ -401,6 +460,14 @@ struct ClipboardPickerView: View {
         case .other:
             return "其他内容"
         }
+    }
+
+    /// 副标题：收藏分区显示收藏时间（与排序一致），实时分区显示复制时间。
+    private func rowMeta(for item: ClipboardItem) -> String {
+        if scope == .favorites, let favoritedAt = item.favoritedAt {
+            return "\(item.kind.title) · 收藏于 \(ClipboardPanelView.relativeString(since: favoritedAt))"
+        }
+        return "\(item.kind.title) · \(ClipboardPanelView.relativeString(since: item.createdAt))"
     }
 
     // MARK: - 键盘 / 操作

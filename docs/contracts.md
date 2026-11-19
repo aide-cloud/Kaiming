@@ -139,6 +139,9 @@ struct ScreenshotPanelView: View   // 菜单栏面板「截图」页，无参初
 ```swift
 enum ClipboardKind: String, Codable, Sendable { case text, image, fileURLs, richText, other }
 
+/// 列表分区：收藏（永久保留）/ 实时（按上限淘汰）。
+enum ClipboardScope: String, CaseIterable, Identifiable, Sendable { case favorites, live }
+
 struct ClipboardItem: Identifiable, Equatable, Sendable {
     let id: UUID
     var kind: ClipboardKind
@@ -146,7 +149,8 @@ struct ClipboardItem: Identifiable, Equatable, Sendable {
     var imageFileName: String?      // 相对 AppPaths.clipboardStore 的文件名
     var fileURLs: [URL]
     var createdAt: Date
-    var isPinned: Bool
+    var isFavorite: Bool            // 收藏项永久保留，不计入上限
+    var favoritedAt: Date?          // 「收藏」分区按它倒序
     var sourceBundleID: String?
 }
 
@@ -154,20 +158,23 @@ struct ClipboardItem: Identifiable, Equatable, Sendable {
     static let shared: ClipboardManager
     private(set) var items: [ClipboardItem]
     private(set) var currentText: String?    // 当前剪贴板文本（非文本为 nil）
+    var removableHistoryCount: Int           // 非收藏项数量（清空 / 淘汰的目标）
     func startMonitoring()
     func stopMonitoring()
     func refreshNow()
-    func clearHistory()
+    func clearHistory()                      // 只清实时历史，收藏项及其图片保留
     func clearPasteboard()
     func copyToPasteboard(_ item: ClipboardItem)
-    func delete(_ item: ClipboardItem)
-    func togglePin(_ item: ClipboardItem)
+    func delete(_ item: ClipboardItem)       // 收藏项同样会被删除
+    func toggleFavorite(_ item: ClipboardItem)
+    func entries(in scope: ClipboardScope) -> [ClipboardItem]
+    func count(in scope: ClipboardScope) -> Int
 }
-struct ClipboardPanelView: View
+struct ClipboardPanelView: View              // init(initialScope: ClipboardScope = .live)
 ```
 
 `AppDelegate` 启动时调用 `startMonitoring()`、退出时 `stopMonitoring()`；
-`SettingsView` 的「清空全部历史记录」调用 `clearHistory()`。这些调用点已存在，签名必须保持。
+`SettingsView` 的「清空实时历史（保留收藏）」调用 `clearHistory()`。这些调用点已存在，签名必须保持。
 
 ### Wallpaper（`Kaiming/Wallpaper/`）
 
@@ -491,3 +498,23 @@ struct PermissionStatus: Equatable, Sendable { var isGranted: Bool; var checkedA
     否则副屏上的第一次按下会被系统吞掉（区域拖不动、窗口点不中）。
   - 调试：`--capture-test region` 的 stderr 会打印 `screens [...] captures [...] failed=[]`、
     `overlay presented ...`、每个覆盖层窗口的 `frame/visible/activeSpace`，用于多屏排查。
+
+## 26. 剪贴板收藏与「收藏 / 实时」分区
+
+- `ClipboardItem.isPinned` 更名为 `isFavorite`，新增 `favoritedAt`（收藏时间，参与「收藏」分区排序）。
+  语义与旧「置顶」一致：**永久保留**，不计入条数上限、不会被自动淘汰，也不会被「清空实时历史」删除；
+  用户可逐条取消收藏（回到普通历史）或直接删除。
+- 磁盘格式升级为 `version: 2`。`ClipboardHistoryStore.StoredItem` 自定义 `init(from:)`：
+  读不到 `isFavorite` 时回退读 v1 的 `isPinned`，旧历史里的置顶项自动变成收藏项（`favoritedAt` 为 nil，
+  排序退回复制时间）。写盘时仍**镜像**写出 `isPinned`（与 `isFavorite` 同值）：旧版本的 `StoredItem`
+  要求这个非可选字段，缺了会整份历史解码失败，镜像后降级运行不会丢历史。
+- 分区由 `ClipboardScope` 表达，**不是两份数据**：`items` 仍是同一份历史。
+  - `.live`：全部条目，按 `createdAt` 倒序；收藏项同样在列表里并带 ☆，避免「收藏后历史里找不到」。
+  - `.favorites`：`isFavorite == true` 的条目，按 `favoritedAt` 倒序。
+- 条数上限只约束非收藏项：`enforceHistoryLimit()` 淘汰最旧的未收藏记录；
+  `removableHistoryCount` 是「清空实时历史」与按钮禁用态的判据。
+- 面板（`ClipboardPanelView`）与快捷选择窗口（`ClipboardPickerView`）都用
+  `Picker(.segmented)` 呈现「收藏 N / 实时 N」两个 tab，搜索、↑/↓ 选择都在当前分区内生效；
+  切分区时选中项回到该分区第一条。
+- 调试：`--snapshot-clipboard-scope favorites` 可让 `--snapshot-panel` / `--snapshot-clipboard-picker`
+  直接渲染「收藏」页；`KAIMING_SUPPORT_DIR`（仅 DEBUG）把数据目录指到临时路径，避免截图污染真实历史。

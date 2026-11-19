@@ -12,8 +12,14 @@ struct ClipboardPanelView: View {
     @ObservedObject private var manager = ClipboardManager.shared
     @EnvironmentObject private var settings: SettingsStore
     @Environment(\.openWindow) private var openWindow
+    /// 收藏 / 实时分区；面板收起后保留本次选择。
+    @State private var scope: ClipboardScope
     /// 内联确认态：只属于本次面板显示，面板收起后必须复位，避免下次打开停在「清空历史」确认页。
     @State private var isConfirmingClearHistory = false
+
+    init(initialScope: ClipboardScope = .live) {
+        _scope = State(initialValue: initialScope)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -30,8 +36,11 @@ struct ClipboardPanelView: View {
             PanelDismissObserver(onDismiss: cancelClearHistoryConfirmation)
                 .frame(width: 0, height: 0)
         )
-        .onChange(of: manager.items.isEmpty) { _, isEmpty in
-            if isEmpty {
+        .onChange(of: scope) { _, _ in
+            cancelClearHistoryConfirmation()
+        }
+        .onChange(of: manager.removableHistoryCount) { _, count in
+            if count == 0 {
                 cancelClearHistoryConfirmation()
             }
         }
@@ -196,24 +205,21 @@ struct ClipboardPanelView: View {
         }
     }
 
-    // MARK: - 历史记录
+    // MARK: - 历史记录（收藏 / 实时）
 
     private var historySection: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
-                Image(systemName: "clock.arrow.circlepath")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                Text("历史记录")
-                    .font(.system(size: 12, weight: .semibold))
-                Text("\(manager.items.count)")
-                    .font(.system(size: 9))
-                    .foregroundStyle(.tertiary)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(
-                        Capsule().fill(Color.secondary.opacity(0.12))
-                    )
+                Picker("剪贴板分区", selection: $scope) {
+                    ForEach(ClipboardScope.allCases) { scope in
+                        Text("\(scope.title) \(manager.count(in: scope))")
+                            .tag(scope)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 176)
+                .help("「收藏」永久保留；「实时」按复制时间累积，超出上限淘汰最旧记录")
 
                 Spacer(minLength: 4)
 
@@ -248,41 +254,60 @@ struct ClipboardPanelView: View {
                 .accessibilityLabel("刷新剪贴板")
             }
 
-            if manager.items.isEmpty {
+            if scopedItems.isEmpty {
                 emptyHistory
             } else {
                 LazyVStack(spacing: 2) {
-                    ForEach(manager.items) { item in
-                        ClipboardHistoryRow(item: item)
+                    ForEach(scopedItems) { item in
+                        ClipboardHistoryRow(item: item, scope: scope)
                     }
                 }
             }
 
-            Text("最多保留 \(settings.clipboardHistoryLimit) 条；置顶项固定在最上方，且不会被自动淘汰。")
+            Text(scopeFootnote)
                 .font(.system(size: 9))
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
 
+    private var scopedItems: [ClipboardItem] {
+        manager.entries(in: scope)
+    }
+
+    private var scopeFootnote: String {
+        switch scope {
+        case .live:
+            return "实时最多保留 \(settings.clipboardHistoryLimit) 条，超出后淘汰最旧的记录；收藏项永久保留，不受影响。"
+        case .favorites:
+            return "收藏项永久保留，不计入实时历史的条数上限；可随时取消收藏或删除。"
+        }
+    }
+
     private var emptyHistory: some View {
         VStack(spacing: 5) {
-            Image(systemName: "tray")
+            Image(systemName: scope == .favorites ? "star" : "tray")
                 .font(.system(size: 17))
                 .foregroundStyle(.tertiary)
-            Text("暂无历史记录")
+
+            Text(scope == .favorites ? "还没有收藏" : "暂无实时历史")
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.secondary)
-            Text("复制文本、图片或文件后会自动出现在这里。")
-                .font(.system(size: 9))
-                .foregroundStyle(.tertiary)
-                .multilineTextAlignment(.center)
+
+            Text(
+                scope == .favorites
+                    ? "在「实时」里点 ☆ 即可收藏，收藏项永久保留、可随时移除。"
+                    : "复制文本、图片或文件后会自动出现在这里。"
+            )
+            .font(.system(size: 9))
+            .foregroundStyle(.tertiary)
+            .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 16)
     }
 
-    // MARK: - 清空历史
+    // MARK: - 清空实时历史
 
     private var clearSection: some View {
         VStack(spacing: 0) {
@@ -295,12 +320,12 @@ struct ClipboardPanelView: View {
                 Button(role: .destructive) {
                     isConfirmingClearHistory = true
                 } label: {
-                    Label("清空历史", systemImage: "trash")
+                    Label("清空实时历史", systemImage: "trash")
                         .frame(maxWidth: .infinity)
                 }
                 .controlSize(.small)
-                .disabled(manager.items.isEmpty)
-                .help("删除全部历史记录（包括置顶项）")
+                .disabled(manager.removableHistoryCount == 0)
+                .help("删除全部实时历史，收藏项会保留")
             }
         }
     }
@@ -315,9 +340,9 @@ struct ClipboardPanelView: View {
                     .padding(.top, 1)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("清空全部剪贴板历史？")
+                    Text("清空实时历史？")
                         .font(.system(size: 11, weight: .semibold))
-                    Text("将删除 \(manager.items.count) 条历史记录（包括置顶项）及其保存的图片文件，此操作不可撤销。")
+                    Text(clearHistoryDetail)
                         .font(.system(size: 9))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -335,7 +360,7 @@ struct ClipboardPanelView: View {
                 .controlSize(.small)
                 .keyboardShortcut(.cancelAction)
 
-                Button("清空历史", role: .destructive) {
+                Button("清空实时历史", role: .destructive) {
                     // 先收起确认态，再清空：即使 clearHistory 触发 notice 重绘，也不会停在确认页。
                     isConfirmingClearHistory = false
                     manager.clearHistory()
@@ -354,6 +379,15 @@ struct ClipboardPanelView: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .strokeBorder(Color.red.opacity(0.22))
         )
+    }
+
+    private var clearHistoryDetail: String {
+        let removable = manager.removableHistoryCount
+        let favorites = manager.count(in: .favorites)
+        if favorites == 0 {
+            return "将删除 \(removable) 条实时记录及其保存的图片文件，此操作不可撤销。"
+        }
+        return "将删除 \(removable) 条实时记录及其保存的图片文件；\(favorites) 条收藏会保留，此操作不可撤销。"
     }
 
     // MARK: - 工具
@@ -391,6 +425,7 @@ struct ClipboardPanelView: View {
 
 private struct ClipboardHistoryRow: View {
     let item: ClipboardItem
+    let scope: ClipboardScope
 
     @ObservedObject private var manager = ClipboardManager.shared
     @State private var isHovering = false
@@ -408,15 +443,15 @@ private struct ClipboardHistoryRow: View {
                         .truncationMode(.tail)
                         .multilineTextAlignment(.leading)
 
-                    if item.isPinned {
-                        Image(systemName: "pin.fill")
+                    if item.isFavorite {
+                        Image(systemName: "star.fill")
                             .font(.system(size: 8))
                             .foregroundStyle(.orange)
-                            .help("已置顶，不会被自动淘汰")
+                            .help("已收藏，永久保留")
                     }
                 }
 
-                Text(ClipboardPanelView.relativeString(since: item.createdAt))
+                Text(rowDetail)
                     .font(.system(size: 8.5))
                     .foregroundStyle(.tertiary)
             }
@@ -444,6 +479,14 @@ private struct ClipboardHistoryRow: View {
             manager.copyToPasteboard(item)
         }
         .help(tapHelp)
+    }
+
+    /// 「收藏」分区里展示收藏时间，「实时」分区里展示复制时间，和各自排序一致。
+    private var rowDetail: String {
+        if scope == .favorites, let favoritedAt = item.favoritedAt {
+            return "收藏于 " + ClipboardPanelView.relativeString(since: favoritedAt)
+        }
+        return ClipboardPanelView.relativeString(since: item.createdAt)
     }
 
     @ViewBuilder
@@ -485,15 +528,16 @@ private struct ClipboardHistoryRow: View {
             .accessibilityLabel("复制")
 
             Button {
-                manager.togglePin(item)
+                manager.toggleFavorite(item)
             } label: {
-                Image(systemName: item.isPinned ? "pin.slash" : "pin")
+                Image(systemName: item.isFavorite ? "star.fill" : "star")
                     .font(.system(size: 10))
+                    .foregroundStyle(item.isFavorite ? Color.orange : Color.primary)
                     .frame(width: 18, height: 18)
             }
             .buttonStyle(.borderless)
-            .help(item.isPinned ? "取消置顶" : "置顶")
-            .accessibilityLabel(item.isPinned ? "取消置顶" : "置顶")
+            .help(item.isFavorite ? "取消收藏" : "收藏（永久保留）")
+            .accessibilityLabel(item.isFavorite ? "取消收藏" : "收藏")
 
             Button(role: .destructive) {
                 manager.delete(item)
@@ -503,7 +547,7 @@ private struct ClipboardHistoryRow: View {
                     .frame(width: 18, height: 18)
             }
             .buttonStyle(.borderless)
-            .help("从历史中删除")
+            .help(item.isFavorite ? "删除（收藏同时移除）" : "从实时历史中删除")
             .accessibilityLabel("删除")
         }
     }
