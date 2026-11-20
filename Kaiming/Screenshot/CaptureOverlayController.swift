@@ -476,7 +476,12 @@ final class CaptureOverlayController: NSObject {
                 beginTextEditing(at: local, in: frozenScreen)
                 return
             }
-            let kind: Annotation.Kind = session.tool == .arrow ? .arrow : .rectangle
+            let kind: Annotation.Kind
+            switch session.tool {
+            case .arrow: kind = .arrow
+            case .mosaic: kind = .mosaic
+            default: kind = .rectangle
+            }
             let targetBounds = CGRect(origin: .zero, size: target.rect.size)
             let annotationStart = ScreenGeometry.localPoint(fromViewPoint: local, targetRect: target.rect)
             let clampedStart = AnnotationGeometry.clampedPoint(annotationStart, to: targetBounds)
@@ -1369,14 +1374,40 @@ final class CaptureOverlayController: NSObject {
         }
 
         if let target, target.screen.displayID == frozenScreen.displayID {
+            // 马赛克直接从覆盖层当前展示的底图取像素：区域截图取冻结屏图，
+            // 窗口 / 长截图预览取已合成的目标图，保证预览与最终 PNG 看到的是同一块像素。
+            let mosaicSource: MosaicSource
+            if target.source != .region, let image = target.image {
+                mosaicSource = MosaicSource(
+                    image: image,
+                    pointSize: target.rect.size,
+                    pointOrigin: target.rect.origin
+                )
+            } else {
+                mosaicSource = MosaicSource(
+                    image: frozenScreen.image,
+                    pointSize: bounds.size,
+                    pointOrigin: .zero
+                )
+            }
             context.saveGState()
             context.addPath(RoundedMask.path(for: target.rect, radius: cornerRadius))
             context.clip()
             for annotation in session.annotations {
-                AnnotationDrawing.draw(annotation: annotation, in: context, origin: target.rect.origin)
+                AnnotationDrawing.draw(
+                    annotation: annotation,
+                    in: context,
+                    origin: target.rect.origin,
+                    mosaicSource: mosaicSource
+                )
             }
             if let draft {
-                AnnotationDrawing.draw(annotation: draft, in: context, origin: target.rect.origin)
+                AnnotationDrawing.draw(
+                    annotation: draft,
+                    in: context,
+                    origin: target.rect.origin,
+                    mosaicSource: mosaicSource
+                )
             }
             context.restoreGState()
 

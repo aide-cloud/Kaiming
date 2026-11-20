@@ -18,12 +18,90 @@ enum RoundedMask {
     }
 }
 
+/// 马赛克取样来源。
+///
+/// 覆盖层预览取「冻结屏图 / 窗口图」，导出取裁剪后的底图；两者都通过
+/// `pointSize` 与 `pointOrigin` 把标注的点坐标映射到源图像素，保证预览与成品一致。
+struct MosaicSource {
+    let image: CGImage
+    /// 源图覆盖的点尺寸。
+    let pointSize: CGSize
+    /// 源图左下角在（含 origin 偏移的）标注坐标系中的位置。
+    let pointOrigin: CGPoint
+}
+
+/// 马赛克的像素化计算：把目标区域降采样成小块，再由调用方用最近邻放大。
+enum MosaicRenderer {
+    /// 马赛克块边长（点）。按底图像素密度换算，不同缩放屏幕上视觉大小一致。
+    static let blockSizeInPoints: CGFloat = 12
+
+    /// 生成矩形区域的马赛克小块图；返回 nil 表示无法取样（调用方需兜底）。
+    static func pixelatedImage(
+        for rect: CGRect,
+        origin: CGPoint,
+        source: MosaicSource?
+    ) -> CGImage? {
+        guard let source,
+              source.image.width > 0, source.image.height > 0,
+              source.pointSize.width > 0, source.pointSize.height > 0,
+              rect.width > 0, rect.height > 0 else { return nil }
+
+        let absolute = rect.offsetBy(dx: origin.x, dy: origin.y)
+        guard absolute.width > 0, absolute.height > 0 else { return nil }
+
+        let scaleX = CGFloat(source.image.width) / source.pointSize.width
+        let scaleY = CGFloat(source.image.height) / source.pointSize.height
+
+        // CGImage.cropping(to:) 使用「左上角为原点、y 向下」的像素坐标，这里做 y 翻转。
+        let imageBounds = CGRect(
+            x: 0,
+            y: 0,
+            width: CGFloat(source.image.width),
+            height: CGFloat(source.image.height)
+        )
+        let pixelRect = CGRect(
+            x: (absolute.minX - source.pointOrigin.x) * scaleX,
+            y: (source.pointSize.height - (absolute.maxY - source.pointOrigin.y)) * scaleY,
+            width: absolute.width * scaleX,
+            height: absolute.height * scaleY
+        ).integral
+        let cropRect = pixelRect.intersection(imageBounds).integral
+        guard cropRect.width >= 1, cropRect.height >= 1,
+              let cropped = source.image.cropping(to: cropRect) else { return nil }
+
+        let blockPixels = max(1, blockSizeInPoints * (scaleX + scaleY) / 2)
+        let columns = max(1, Int((CGFloat(cropped.width) / blockPixels).rounded()))
+        let rows = max(1, Int((CGFloat(cropped.height) / blockPixels).rounded()))
+
+        guard let context = CGContext(
+            data: nil,
+            width: columns,
+            height: rows,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            Log.screenshot.error("Unable to create mosaic bitmap context")
+            return nil
+        }
+        context.interpolationQuality = .high
+        context.draw(cropped, in: CGRect(x: 0, y: 0, width: columns, height: rows))
+        return context.makeImage()
+    }
+}
+
 /// 标注绘制与拍平。
 ///
 /// 覆盖层预览与最终导出共用同一套绘制代码：预览时 `origin` 是选区在屏幕上的左下角、
 /// 上下文未缩放；导出时上下文按「像素 / 点」缩放、`origin` 为零，因此两者视觉一致。
 enum AnnotationDrawing {
-    static func draw(annotation: Annotation, in context: CGContext, origin: CGPoint) {
+    static func draw(
+        annotation: Annotation,
+        in context: CGContext,
+        origin: CGPoint,
+        mosaicSource: MosaicSource? = nil
+    ) {
         context.saveGState()
         context.translateBy(x: origin.x, y: origin.y)
         context.setShouldAntialias(true)
@@ -58,6 +136,19 @@ enum AnnotationDrawing {
                 context.closePath()
                 context.fillPath()
             }
+
+        case .mosaic:
+            let rect = AnnotationGeometry.normalizedRect(from: annotation.start, to: annotation.end)
+            guard let patch = MosaicRenderer.pixelatedImage(for: rect, origin: origin, source: mosaicSource) else {
+                // 没有可用的底图像素时退化为纯色遮挡，避免敏感内容直接漏出。
+                context.setFillColor(NSColor.black.withAlphaComponent(0.72).cgColor)
+                context.fill(rect)
+                break
+            }
+            context.saveGState()
+            context.interpolationQuality = .none
+            context.draw(patch, in: rect)
+            context.restoreGState()
 
         case .text:
             guard let text = annotation.text, !text.isEmpty else { break }
@@ -141,8 +232,13 @@ enum AnnotationDrawing {
         let graphicsContext = NSGraphicsContext(cgContext: context, flipped: false)
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = graphicsContext
+        let mosaicSource = MosaicSource(
+            image: baseImage,
+            pointSize: boundsInPoints,
+            pointOrigin: .zero
+        )
         for annotation in annotations {
-            draw(annotation: annotation, in: context, origin: .zero)
+            draw(annotation: annotation, in: context, origin: .zero, mosaicSource: mosaicSource)
         }
         NSGraphicsContext.restoreGraphicsState()
         context.restoreGState()

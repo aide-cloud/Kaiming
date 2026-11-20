@@ -7,6 +7,7 @@ enum AnnotationTool: String, CaseIterable, Identifiable, Sendable {
     case rectangle
     case arrow
     case text
+    case mosaic
 
     var id: String { rawValue }
 
@@ -16,6 +17,7 @@ enum AnnotationTool: String, CaseIterable, Identifiable, Sendable {
         case .rectangle: "矩形"
         case .arrow: "箭头"
         case .text: "文字"
+        case .mosaic: "马赛克"
         }
     }
 
@@ -25,6 +27,7 @@ enum AnnotationTool: String, CaseIterable, Identifiable, Sendable {
         case .rectangle: "rectangle"
         case .arrow: "arrow.up.right"
         case .text: "textformat"
+        case .mosaic: "square.grid.3x3.fill"
         }
     }
 }
@@ -64,6 +67,7 @@ struct Annotation: Identifiable, Equatable, Sendable {
         case rectangle
         case arrow
         case text
+        case mosaic
     }
 
     let id: UUID
@@ -154,6 +158,9 @@ enum AnnotationGeometry {
         switch kind {
         case .rectangle, .arrow:
             return abs(end.x - start.x) >= minimumDrawingSize || abs(end.y - start.y) >= minimumDrawingSize
+        case .mosaic:
+            // 马赛克需要真实覆盖一块区域，细条没有遮挡意义。
+            return abs(end.x - start.x) >= minimumDrawingSize && abs(end.y - start.y) >= minimumDrawingSize
         case .text:
             return true
         }

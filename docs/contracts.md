@@ -317,6 +317,9 @@ struct ClipboardPickerSearchField: NSViewRepresentable  // NSTextField + delegat
 ## 14. 截图：圆角与长截图
 
 - 圆角：选区/标注工具栏提供 0–48pt 圆角调整，预览与最终 PNG 都应用圆角遮罩（圆角外透明）。
+- 马赛克：工具栏「马赛克」工具拖拽出的矩形，对底图像素做块状像素化（默认块边长 12pt，
+  按底图像素密度换算）；覆盖层预览与最终 PNG 共用 `MosaicRenderer` 取样，
+  区域截图取冻结屏图、窗口 / 长截图预览取目标图，坐标映射必须一致；可撤销。
 - 长截图（仅区域模式）：
   - **默认手动滚动**：点击长截图立即开始手动采集，不再要求先选择模式；保留 border-only
     选区边框窗口（`.screenSaver`、`ignoresMouseEvents`、透明、只画边框），用户实时滚动。
