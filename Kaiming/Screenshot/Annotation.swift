@@ -4,6 +4,7 @@ import CoreGraphics
 /// 标注工具。
 enum AnnotationTool: String, CaseIterable, Identifiable, Sendable {
     case select
+    case pen
     case rectangle
     case arrow
     case text
@@ -14,6 +15,7 @@ enum AnnotationTool: String, CaseIterable, Identifiable, Sendable {
     var title: String {
         switch self {
         case .select: "调整选区"
+        case .pen: "画笔（手写）"
         case .rectangle: "矩形"
         case .arrow: "箭头"
         case .text: "文字"
@@ -24,6 +26,7 @@ enum AnnotationTool: String, CaseIterable, Identifiable, Sendable {
     var symbolName: String {
         switch self {
         case .select: "cursorarrow"
+        case .pen: "scribble.variable"
         case .rectangle: "rectangle"
         case .arrow: "arrow.up.right"
         case .text: "textformat"
@@ -68,6 +71,8 @@ struct Annotation: Identifiable, Equatable, Sendable {
         case arrow
         case text
         case mosaic
+        /// 手写笔迹：由连续的采样点连成的自由曲线。
+        case pen
     }
 
     let id: UUID
@@ -77,6 +82,8 @@ struct Annotation: Identifiable, Equatable, Sendable {
     var color: AnnotationColor
     var lineWidth: CGFloat
     var text: String?
+    /// 手写笔迹的采样点（含起点）。其它标注类型为空。
+    var points: [CGPoint]
 
     init(
         id: UUID = UUID(),
@@ -85,7 +92,8 @@ struct Annotation: Identifiable, Equatable, Sendable {
         end: CGPoint? = nil,
         color: AnnotationColor,
         lineWidth: CGFloat = 3,
-        text: String? = nil
+        text: String? = nil,
+        points: [CGPoint] = []
     ) {
         self.id = id
         self.kind = kind
@@ -94,6 +102,7 @@ struct Annotation: Identifiable, Equatable, Sendable {
         self.color = color
         self.lineWidth = lineWidth
         self.text = text
+        self.points = points
     }
 }
 
@@ -102,6 +111,10 @@ enum AnnotationGeometry {
     static let textFontSize: CGFloat = 16
     /// 小于该尺寸的拖拽不生成矩形/箭头，避免双击或误触留下一个点。
     static let minimumDrawingSize: CGFloat = 3
+    /// 手写笔迹的最小采样间距（点）：更近的鼠标事件并入上一个点。
+    static let minimumPenSampleDistance: CGFloat = 0.6
+    /// 手写笔迹的默认线宽（点），比矩形/箭头略粗，接近日常手写笔。
+    static let penLineWidth: CGFloat = 4
 
     static func normalizedRect(from start: CGPoint, to end: CGPoint) -> CGRect {
         CGRect(
@@ -154,15 +167,61 @@ enum AnnotationGeometry {
     }
 
     /// 拖拽出来的标注是否足够大，值得记录。
-    static func isMeaningful(kind: Annotation.Kind, start: CGPoint, end: CGPoint) -> Bool {
+    /// - Parameter points: 手写笔迹的采样点；其它标注类型传空数组。
+    static func isMeaningful(
+        kind: Annotation.Kind,
+        start: CGPoint,
+        end: CGPoint,
+        points: [CGPoint] = []
+    ) -> Bool {
         switch kind {
         case .rectangle, .arrow:
             return abs(end.x - start.x) >= minimumDrawingSize || abs(end.y - start.y) >= minimumDrawingSize
         case .mosaic:
             // 马赛克需要真实覆盖一块区域，细条没有遮挡意义。
             return abs(end.x - start.x) >= minimumDrawingSize && abs(end.y - start.y) >= minimumDrawingSize
+        case .pen:
+            // 至少两个采样点且达到最小长度，避免单击/误触留下一个点。
+            guard points.count >= 2 else { return false }
+            return freehandLength(points) >= minimumDrawingSize
         case .text:
             return true
         }
+    }
+
+    /// 手写笔迹的累计长度（点）。
+    static func freehandLength(_ points: [CGPoint]) -> CGFloat {
+        guard points.count > 1 else { return 0 }
+        var length: CGFloat = 0
+        for index in 1..<points.count {
+            let dx = points[index].x - points[index - 1].x
+            let dy = points[index].y - points[index - 1].y
+            length += (dx * dx + dy * dy).squareRoot()
+        }
+        return length
+    }
+
+    /// 手写笔迹的平滑路径：以相邻采样点的中点为锚、原采样点为控制点做二次贝塞尔，
+    /// 消除鼠标/触控板采样折线的棱角。
+    static func freehandPath(_ points: [CGPoint]) -> CGPath {
+        let path = CGMutablePath()
+        guard let first = points.first else { return path }
+        path.move(to: first)
+        guard points.count > 2 else {
+            if points.count == 2 {
+                path.addLine(to: points[1])
+            }
+            return path
+        }
+        for index in 1..<(points.count - 1) {
+            let current = points[index]
+            let next = points[index + 1]
+            let mid = CGPoint(x: (current.x + next.x) / 2, y: (current.y + next.y) / 2)
+            path.addQuadCurve(to: mid, control: current)
+        }
+        if let last = points.last {
+            path.addLine(to: last)
+        }
+        return path
     }
 }

@@ -29,7 +29,7 @@ final class AnnotationSession: ObservableObject {
 
 /// 覆盖层底部/顶部的轻量标注工具栏。
 struct AnnotationToolbar: View {
-    static let preferredSize = CGSize(width: 700, height: 44)
+    static let preferredSize = CGSize(width: 750, height: 44)
 
     @ObservedObject var session: AnnotationSession
     /// 只有区域截图（未进入长截图流程）才显示长截图入口。
@@ -40,7 +40,7 @@ struct AnnotationToolbar: View {
 
     var body: some View {
         HStack(spacing: 5) {
-            ForEach([AnnotationTool.select, .rectangle, .arrow, .text, .mosaic]) { tool in
+            ForEach([AnnotationTool.select, .pen, .rectangle, .arrow, .text, .mosaic]) { tool in
                 toolButton(tool)
             }
 

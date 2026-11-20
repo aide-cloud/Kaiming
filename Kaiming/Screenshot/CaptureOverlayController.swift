@@ -478,6 +478,7 @@ final class CaptureOverlayController: NSObject {
             }
             let kind: Annotation.Kind
             switch session.tool {
+            case .pen: kind = .pen
             case .arrow: kind = .arrow
             case .mosaic: kind = .mosaic
             default: kind = .rectangle
@@ -486,7 +487,13 @@ final class CaptureOverlayController: NSObject {
             let annotationStart = ScreenGeometry.localPoint(fromViewPoint: local, targetRect: target.rect)
             let clampedStart = AnnotationGeometry.clampedPoint(annotationStart, to: targetBounds)
             interaction = .annotating(kind: kind, start: clampedStart)
-            draft = Annotation(kind: kind, start: clampedStart, color: session.color)
+            draft = Annotation(
+                kind: kind,
+                start: clampedStart,
+                color: session.color,
+                lineWidth: kind == .pen ? AnnotationGeometry.penLineWidth : 3,
+                points: kind == .pen ? [clampedStart] : []
+            )
             refreshViews()
             return
         }
@@ -538,7 +545,20 @@ final class CaptureOverlayController: NSObject {
             guard var draft, let target, target.screen.displayID == frozenScreen.displayID else { return }
             let targetBounds = CGRect(origin: .zero, size: target.rect.size)
             let annotationPoint = ScreenGeometry.localPoint(fromViewPoint: local, targetRect: target.rect)
-            draft.end = AnnotationGeometry.clampedPoint(annotationPoint, to: targetBounds)
+            let clamped = AnnotationGeometry.clampedPoint(annotationPoint, to: targetBounds)
+            draft.end = clamped
+            if draft.kind == .pen {
+                // 按最小采样距离抽稀，避免高频鼠标事件堆积大量冗余点。
+                if let last = draft.points.last {
+                    let dx = clamped.x - last.x
+                    let dy = clamped.y - last.y
+                    if (dx * dx + dy * dy).squareRoot() < AnnotationGeometry.minimumPenSampleDistance {
+                        self.draft = draft
+                        return
+                    }
+                }
+                draft.points.append(clamped)
+            }
             self.draft = draft
             refreshViews()
 
@@ -576,7 +596,8 @@ final class CaptureOverlayController: NSObject {
             if let draft, AnnotationGeometry.isMeaningful(
                 kind: draft.kind,
                 start: draft.start,
-                end: draft.end
+                end: draft.end,
+                points: draft.points
             ) {
                 session.add(draft)
             }

@@ -28,7 +28,7 @@ struct ScreenshotPanelView: View {
             modeSection
             recentSection
 
-            Text("区域截图支持 8 个手柄、0–48pt 圆角与矩形/箭头/文字标注；选中区域后可进入长截图（自动滚动需辅助功能权限，也可手动滚动拼接）。")
+            Text("区域截图支持 8 个手柄、0–48pt 圆角与画笔手写/矩形/箭头/文字标注；选中区域后可进入长截图（自动滚动需辅助功能权限，也可手动滚动拼接）。")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

@@ -314,9 +314,14 @@ struct ClipboardPickerSearchField: NSViewRepresentable  // NSTextField + delegat
   已 `_ = WallpaperManager.shared` 触发；恢复需延迟到窗口可用）。
 - 错误必须 `AppState.flash(.error)`；视频不可播放时拒绝并提示。
 
-## 14. 截图：圆角与长截图
+## 14. 截图：圆角、画笔与长截图
 
 - 圆角：选区/标注工具栏提供 0–48pt 圆角调整，预览与最终 PNG 都应用圆角遮罩（圆角外透明）。
+- 画笔（手写）：工具栏「画笔」工具按住拖拽绘制自由笔迹；采样点按最小间距抽稀后
+  用二次贝塞尔（相邻点中点为锚、原采样点为控制点）平滑，避免折线棱角；
+  `round` 线帽/连接、默认 4pt 线宽，沿用当前标注颜色；松开鼠标生成一条可撤销的
+  手写标注。预览与最终 PNG 共用 `AnnotationGeometry.freehandPath` 与
+  `AnnotationDrawing.draw`，坐标随选区裁剪，点太少或过短的笔迹不落笔。
 - 马赛克：工具栏「马赛克」工具拖拽出的矩形，对底图像素做块状像素化（默认块边长 12pt，
   按底图像素密度换算）；覆盖层预览与最终 PNG 共用 `MosaicRenderer` 取样，
   区域截图取冻结屏图、窗口 / 长截图预览取目标图，坐标映射必须一致；可撤销。

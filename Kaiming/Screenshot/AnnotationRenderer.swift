@@ -150,6 +150,23 @@ enum AnnotationDrawing {
             context.draw(patch, in: rect)
             context.restoreGState()
 
+        case .pen:
+            if annotation.points.count == 1, let point = annotation.points.first {
+                // 单点按下时给一个圆点反馈，避免画笔看起来没生效。
+                let radius = max(annotation.lineWidth / 2, 1.5)
+                context.fillEllipse(
+                    in: CGRect(
+                        x: point.x - radius,
+                        y: point.y - radius,
+                        width: radius * 2,
+                        height: radius * 2
+                    )
+                )
+            } else if annotation.points.count > 1 {
+                context.addPath(AnnotationGeometry.freehandPath(annotation.points))
+                context.strokePath()
+            }
+
         case .text:
             guard let text = annotation.text, !text.isEmpty else { break }
             let attributes: [NSAttributedString.Key: Any] = [
