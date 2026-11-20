@@ -54,7 +54,7 @@ DEVELOPMENT_TEAM=ABCDE12345 ./Scripts/archive.sh --sign
    app 与 framework，满足公证要求。
 2. `-exportArchive` 生成 `build/export/Kaiming.app`；
 3. `codesign --verify --deep --strict`；
-4. 生成 DMG：`build/Kaiming-1.4.0.dmg`。
+4. 生成 DMG：`build/Kaiming-0.0.1.dmg`。
 
 检查签名：
 
@@ -96,9 +96,22 @@ NOTARY_PROFILE=KaimingNotary ./Scripts/notarize.sh
 
 ## 5. 版本号
 
-- `MARKETING_VERSION`：`Config/Info.plist` 里通过 `$(MARKETING_VERSION)` 注入，当前 1.4.0；
-- `CURRENT_PROJECT_VERSION`（build）：当前 7；
+- `MARKETING_VERSION`：`Config/Info.plist` 里通过 `$(MARKETING_VERSION)` 注入，当前 0.0.1；
+- `CURRENT_PROJECT_VERSION`（build）：当前 8；
 - 发版时同步修改 `Kaiming.xcodeproj` target 的 `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION`。
+
+### GitHub Release 发布流程
+
+`.github/workflows/package.yml` 在推送 `v*` tag 时自动打包并创建 Release：
+
+```bash
+git tag -a v0.0.1 -m "Kaiming v0.0.1"
+git push origin v0.0.1
+```
+
+CI 会构建 Release archive → 校验签名/架构 → 生成 ZIP + DMG + SHA256SUMS →
+`gh release create`（已存在则用 `--clobber` 更新资产）。推送前务必确认
+`MARKETING_VERSION` 与 tag 一致，否则产物文件名为旧版本号。
 
 ## 6. 已知环境限制
 
