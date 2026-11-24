@@ -41,10 +41,12 @@ else
 fi
 
 echo "==> Checksums"
+HAS_DMG=0
+[ -f "$DMG" ] && HAS_DMG=1
 (
   cd "$OUT"
   FILES=("$(basename "$ZIP")")
-  if [ -f "$DMG" ]; then FILES+=("$(basename "$DMG")"); fi
+  if [ "$HAS_DMG" = "1" ]; then FILES+=("$(basename "$DMG")"); fi
   shasum -a 256 "${FILES[@]}" > SHA256SUMS.txt
   cat SHA256SUMS.txt
 )
