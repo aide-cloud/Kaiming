@@ -47,7 +47,9 @@ struct MenuBarPanel: View {
             Spacer()
 
             Button {
-                openWindow(id: "markdown")
+                // 面板可能停在任意一块屏幕，Markdown 窗口跟随鼠标所在屏幕出现。
+                WindowPlacementCenter.shared.willOpen(scene: AppWindowScene.markdown)
+                openWindow(id: AppWindowScene.markdown)
                 NSApp.activate(ignoringOtherApps: true)
             } label: {
                 Image(systemName: "doc.richtext")

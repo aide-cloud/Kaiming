@@ -26,6 +26,10 @@ grep -rn "CGDisplayCreateImage" Kaiming --include='*.swift'               # 仅�
 - [ ] 菜单栏图标点击弹出 400×580 面板，四个 Tab（截图/剪贴板/壁纸/应用）可切换。
 - [ ] 点面板右上 Markdown 图标打开独立窗口；关闭后可再次打开。
 - [ ] 设置窗口可打开（面板底部齿轮 / ⌘,）。
+- [ ] 多显示器：鼠标停在副屏时 ⌥⇧M / ⌥⇧C，窗口出现在**副屏中央**（不是主屏）。
+- [ ] 多 Space：把 Markdown 窗口留在别的桌面，回到桌面 1 按 ⌥⇧M，窗口跟到当前桌面出现，桌面不滑动。
+- [ ] Markdown 窗口手动摆好位置后再打开，位置保持不变（不每次强制居中）；窗口比当前屏幕大时先收缩再居中。
+- [ ] 调试日志：`log stream --predicate 'process == "Kaiming"' | grep placed` 能看到 `placed <scene> window on screen ...`。
 
 调试构建提供以下验证钩子（Release 不包含；见 `#if DEBUG`）：
 

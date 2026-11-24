@@ -16,7 +16,8 @@ struct MenuBarLabel: View {
                 // 仅调试构建：方便自动化冒烟与截图验收。
                 if ProcessInfo.processInfo.arguments.contains("--open-markdown") {
                     try? await Task.sleep(nanoseconds: 1_200_000_000)
-                    openWindow(id: "markdown")
+                    WindowPlacementCenter.shared.willOpen(scene: AppWindowScene.markdown)
+                    openWindow(id: AppWindowScene.markdown)
                     NSApp.activate(ignoringOtherApps: true)
                 }
                 #endif
@@ -32,16 +33,19 @@ struct MenuBarLabel: View {
                 ScreenshotCoordinator.shared.start(mode: mode)
             },
             markdown: {
-                openWindow(id: "markdown")
+                // 独立窗口统一出现在鼠标所在屏幕（见 WindowPlacement）。
+                WindowPlacementCenter.shared.willOpen(scene: AppWindowScene.markdown)
+                openWindow(id: AppWindowScene.markdown)
                 NSApp.activate(ignoringOtherApps: true)
             }
         )
         AppRouter.shared.registerSettings {
-            openWindow(id: "settings")
+            openWindow(id: AppWindowScene.settings)
             NSApp.activate(ignoringOtherApps: true)
         }
         AppRouter.shared.registerClipboardPicker {
-            openWindow(id: "clipboard-picker")
+            WindowPlacementCenter.shared.willOpen(scene: AppWindowScene.clipboardPicker)
+            openWindow(id: AppWindowScene.clipboardPicker)
             NSApp.activate(ignoringOtherApps: true)
         }
     }

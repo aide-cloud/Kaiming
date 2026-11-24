@@ -224,7 +224,8 @@ struct ClipboardPanelView: View {
                 Spacer(minLength: 4)
 
                 Button {
-                    openWindow(id: "clipboard-picker")
+                    WindowPlacementCenter.shared.willOpen(scene: AppWindowScene.clipboardPicker)
+                    openWindow(id: AppWindowScene.clipboardPicker)
                     NSApp.activate(ignoringOtherApps: true)
                 } label: {
                     HStack(spacing: 3) {

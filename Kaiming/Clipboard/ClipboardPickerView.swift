@@ -47,6 +47,11 @@ struct ClipboardPickerView: View {
         .frame(minWidth: 520, minHeight: 460)
         .background(Color(nsColor: .windowBackgroundColor))
         .background(windowAccessor)
+        .background(
+            // 首次出现时居中到鼠标所在屏幕（见 WindowPlacement）。
+            WindowPlacementProbe(scene: AppWindowScene.clipboardPicker)
+                .frame(width: 0, height: 0)
+        )
         .onExitCommand {
             closePicker()
         }
@@ -505,7 +510,7 @@ struct ClipboardPickerView: View {
 
     private func closePicker() {
         let closedWindowNumber = pickerWindow?.windowNumber
-        dismissWindow(id: "clipboard-picker")
+        dismissWindow(id: AppWindowScene.clipboardPicker)
 
         // 没有其他用户可见窗口时隐藏应用，把焦点还给之前的应用，方便直接 ⌘V。
         // 注意：NSStatusBarWindow（level 25）始终 visible；隐藏的 TUINSWindow 也不应计入。

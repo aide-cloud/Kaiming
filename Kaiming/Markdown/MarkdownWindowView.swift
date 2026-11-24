@@ -95,6 +95,11 @@ struct MarkdownWindowView: View {
             .frame(width: 0, height: 0)
         )
         .background(
+            // 窗口首次出现时放到鼠标所在屏幕（见 WindowPlacement）。
+            WindowPlacementProbe(scene: AppWindowScene.markdown)
+                .frame(width: 0, height: 0)
+        )
+        .background(
             MarkdownFindKeyMonitor(
                 isFindPresented: find.isPresented,
                 onFind: { showsReplace in presentFind(showsReplace: showsReplace) },

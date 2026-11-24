@@ -18,7 +18,7 @@ struct KaimingApp: App {
         .menuBarExtraStyle(.window)
 
         // Markdown 是持续编辑型功能，独立窗口承载；绝不嵌入菜单栏面板。
-        Window("Markdown — Kaiming", id: "markdown") {
+        Window("Markdown — Kaiming", id: AppWindowScene.markdown) {
             MarkdownWindowView()
                 .environmentObject(settings)
                 .environmentObject(appState)
@@ -28,7 +28,7 @@ struct KaimingApp: App {
         .windowResizability(.contentMinSize)
 
         // 剪贴板快捷选择（默认 ⌥⇧C，可自定义）：独立小窗口，支持键盘上下选择 + Enter 复制。
-        Window("剪贴板 — Kaiming", id: "clipboard-picker") {
+        Window("剪贴板 — Kaiming", id: AppWindowScene.clipboardPicker) {
             ClipboardPickerView()
                 .environmentObject(settings)
                 .environmentObject(appState)
@@ -39,7 +39,7 @@ struct KaimingApp: App {
 
         // macOS 14 + LSUIElement 下 SwiftUI `Settings` scene 无法可靠唤起
         // （实测 showSettingsWindow: 返回 handled 但不创建窗口），因此使用独立 Window scene。
-        Window("设置 — Kaiming", id: "settings") {
+        Window("设置 — Kaiming", id: AppWindowScene.settings) {
             SettingsView()
                 .environmentObject(settings)
                 .environmentObject(appState)

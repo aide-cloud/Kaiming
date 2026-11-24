@@ -526,3 +526,24 @@ struct PermissionStatus: Equatable, Sendable { var isGranted: Bool; var checkedA
   切分区时选中项回到该分区第一条。
 - 调试：`--snapshot-clipboard-scope favorites` 可让 `--snapshot-panel` / `--snapshot-clipboard-picker`
   直接渲染「收藏」页；`KAIMING_SUPPORT_DIR`（仅 DEBUG）把数据目录指到临时路径，避免截图污染真实历史。
+
+## 27. 独立窗口出现在鼠标所在屏幕
+
+- 统一实现 `WindowPlacement` / `WindowPlacementCenter`（`Kaiming/Shared/WindowPlacement.swift`），
+  scene id 常量在 `AppWindowScene`；Markdown 与剪贴板快捷选择窗口都必须走这一套，不再靠
+  `.defaultPosition(.center)` 或记忆的 frame 决定落点。
+- 窗口首次挂载时内容里的 `WindowPlacementProbe(scene:)` 把真正的 `NSWindow` 登记进来：
+  同步定位一次（赶在 `orderFront` 之前），下一轮 runloop 再校验一次——SwiftUI 之后还会套用
+  `defaultSize` / `defaultPosition` / `NSWindow Frame <id>` 的 frame autosave，不能只放一次。
+- `WindowPlacementCenter.willOpen(scene:)` 在 `openWindow(id:)` **之前**调用：窗口已存在
+  （隐藏、被拖到别的屏幕、关闭后又被复用）就先搬过去；新窗口等挂载后再定位。
+  入口：全局快捷键 / 菜单栏面板 Markdown 按钮 / 面板剪贴板「快速选择」按钮 / `AppRouter`。
+- 落点：`NSEvent.mouseLocation` 所在 `NSScreen`（取不到回退 `NSScreen.main`），窗口在该屏
+  `visibleFrame` 内**居中**；旧 frame 比新屏大时先收缩再居中，`setFrame(..., animate: false)`，
+  不产生位移/缩放动画，避免窗口出现后再被系统推回屏幕内（“窗口自己滚动 / 抖动”）。
+- 窗口已完整落在该屏可见区域内时保持用户摆放的位置（`keepIfUsable`）；只有剪贴板快捷选择
+  窗口每次打开都强制居中。原生全屏窗口（`styleMask.contains(.fullScreen)`）不移动 frame。
+- 独立窗口的 `collectionBehavior` 插入 `.moveToActiveSpace`：打开时跟着当前 Space 出现，
+  不做整屏滑动切到窗口原来所在的桌面。`.canJoinAllSpaces` 的窗口（快照 / 覆盖层）不登记、不改行为。
+- 调试：定位时打印 `Kaiming debug: placed <scene> window on screen <屏名> frame=<frame>`，
+  多显示器 / 多 Space 排查用它确认目标屏与 frame。

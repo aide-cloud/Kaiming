@@ -56,7 +56,7 @@ Kaiming 是一个 macOS 菜单栏常驻的四合一原生效率工具，用同�
 
 | 模块 | 实现 |
 |---|---|
-| 应用骨架 | Swift 6 + SwiftUI；`MenuBarExtra(.window)` + 独立 `Window` scene（Markdown / 设置 / 剪贴板快捷选择）；`LSUIElement` 常驻菜单栏 |
+| 应用骨架 | Swift 6 + SwiftUI；`MenuBarExtra(.window)` + 独立 `Window` scene（Markdown / 设置 / 剪贴板快捷选择）；Markdown 与剪贴板窗口统一出现在**鼠标所在屏幕**并跟随当前 Space（`WindowPlacement`）；`LSUIElement` 常驻菜单栏 |
 | 截图核心 | ScreenCaptureKit：`SCShareableContent` → `SCContentFilter` → `SCStreamConfiguration` → `SCScreenshotManager.captureImage`（macOS 14+） |
 | 截图覆盖层 | AppKit：每屏一个无边框 `.screenSaver` 层级 `NSWindow`，冻结截图 + 8 手柄选区 + CG 标注 |
 | 剪贴板 | AppKit `NSPasteboard`，专用串行 `DispatchQueue` + `changeCount` 轮询 |
