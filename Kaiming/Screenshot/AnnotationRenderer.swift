@@ -121,13 +121,12 @@ enum AnnotationDrawing {
             context.addLine(to: annotation.end)
             context.strokePath()
 
-            let headLength = max(10, annotation.lineWidth * 4)
-            let headWidth = max(9, annotation.lineWidth * 3.5)
+            let metrics = AnnotationGeometry.arrowHeadMetrics(lineWidth: annotation.lineWidth)
             let head = AnnotationGeometry.arrowHead(
                 from: annotation.start,
                 to: annotation.end,
-                headLength: headLength,
-                headWidth: headWidth
+                headLength: metrics.length,
+                headWidth: metrics.width
             )
             if head.count == 3 {
                 context.move(to: head[0])
@@ -170,7 +169,7 @@ enum AnnotationDrawing {
         case .text:
             guard let text = annotation.text, !text.isEmpty else { break }
             let attributes: [NSAttributedString.Key: Any] = [
-                .font: NSFont.systemFont(ofSize: AnnotationGeometry.textFontSize, weight: .semibold),
+                .font: AnnotationGeometry.textFont,
                 .foregroundColor: annotation.color.nsColor,
             ]
             NSAttributedString(string: text, attributes: attributes).draw(at: annotation.start)
@@ -227,6 +226,8 @@ enum AnnotationDrawing {
 
         context.interpolationQuality = .high
 
+        // 新建的 bitmap context 默认全透明。圆角裁剪后四角不会被任何绘制覆盖，
+        // 因此导出的 PNG 在该区域 alpha=0（不要填入背景色，否则会变成不透明）。
         if radius > 0 {
             // 半径按点换算到像素；context 尚未缩放，所以这里直接用像素半径。
             let pixelRadius = min(

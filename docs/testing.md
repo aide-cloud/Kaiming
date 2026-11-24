@@ -49,6 +49,12 @@ APP=build/dd/Build/Products/Debug/Kaiming.app
 "$APP/Contents/MacOS/Kaiming" --snapshot-markdown /tmp/preview-find.png --markdown-render-preview --markdown-find --markdown-find-query 词
 KAIMING_PREVIEW_CLICK_LINK=1 "$APP/Contents/MacOS/Kaiming" --snapshot-markdown /tmp/link.png --markdown-file /abs/a.md --markdown-render-preview  # 自动点击正文首个链接，验证内链留在预览中
 "$APP/Contents/MacOS/Kaiming" --snapshot-settings /tmp/settings.png [--snapshot-settings-tab general|permissions|screenshot|clipboard|markdown|shortcuts|about]
+"$APP/Contents/MacOS/Kaiming" --snapshot-annotation-toolbar /tmp/toolbar.png  # 790pt 工具栏完整渲染（含删除按钮）
+"$APP/Contents/MacOS/Kaiming" --logic-test-annotations  # 命中/拖动夹取/手柄缩放/文字与画笔命中/撤销栈
+"$APP/Contents/MacOS/Kaiming" --logic-test-overlay-interactions  # 覆盖层 mouseDown/Dragged/Up → 选中拖动/手柄缩放/撤销
+"$APP/Contents/MacOS/Kaiming" --logic-test-overlay-view  # 真实 CaptureOverlayView 事件路径：画完自动选中并直接拖动
+"$APP/Contents/MacOS/Kaiming" --render-test-rounded /tmp/rounded.png  # 成品 PNG 四角 alpha=0 + 编码往返校验
+"$APP/Contents/MacOS/Kaiming" --render-test-overlay-corners /tmp/overlay.png  # 覆盖层预览四角透明（离屏绘制）
 "$APP/Contents/MacOS/Kaiming" --capture-test full      # 真实全屏截图（本次覆盖不复制，不改持久化设置）
 "$APP/Contents/MacOS/Kaiming" --capture-test full --capture-test-copy  # 显式验证截图→剪贴板链路
 "$APP/Contents/MacOS/Kaiming" --capture-test full --capture-test-decorate  # 显式验证「成品带窗口头部」链路
@@ -102,6 +108,15 @@ log show --info --debug --last 5m --predicate 'subsystem == "com.kaiming.app"' -
 
 ### 标注与后处理
 - [ ] 矩形、箭头、文字、颜色、撤销可用，标注位置与最终图一致。
+- [ ] 已有标注编辑：画完矩形/箭头/文字后无需切换工具，标注自动出现虚线选中框；
+  按住拖动可整体移动，拖到选区边缘不会越界；点击空白处收起选中并继续绘制下一条。
+- [ ] 切换「调整选区 / 编辑标注」后单击任意已有标注出现虚线选中框；
+  按住拖动可整体移动，拖到选区边缘不会越界。
+- [ ] 矩形/马赛克选中后 8 个手柄可缩放，箭头选中后拖动起点/终点手柄可改方向与长度；
+  缩放后的标注位置与最终 PNG 一致。
+- [ ] 双击文字标注进入编辑（预填原文），Return 提交、Esc 取消；清空内容提交后该标注消失。
+- [ ] Delete / 前向删除删除选中标注；Esc 先取消选中、再取消截图；⌘Z 可撤销新增、
+  拖动、缩放、文字修改与删除；工具栏垃圾桶按钮仅在选中标注时可用。
 - [ ] 画笔（手写）：选择画笔工具后在选区内按住拖拽，实时出现平滑笔迹（无明显折线棱角）；松开后笔迹保留、可撤销；确认后 PNG 同位置有同样的手写笔迹（区域 / 窗口 / 长截图三种来源一致），笔迹不越出选区。
 - [ ] 马赛克：选择「马赛克」工具后拖出矩形区域，预览立即呈块状像素化；确认后 PNG 同一区域同样像素化（区域 / 窗口 / 长截图三种来源一致），可选撤销。
 - [ ] 设置「自动复制到剪贴板」关闭后，不再写剪贴板。
@@ -236,6 +251,10 @@ log show --info --debug --last 5m --predicate 'subsystem == "com.kaiming.app"' -
 
 ### 截图圆角 / 长截图
 - [ ] 圆角 0–48pt 可调，预览与导出 PNG 一致，圆角外透明。
+- [ ] 圆角预览：四个圆角区域完全透明（能直接看到桌面），不是被暗色遮罩/冻结底图填满；
+      拖动圆角滑杆时四角实时变化。
+- [ ] 自动化：`--render-test-overlay-corners` 与 `--render-test-rounded` 均输出 PASS；
+      后者 PNG 四角 alpha=0、中心 alpha=255，且 PNG 编码/解码往返后仍透明。
 - [ ] 区域长截图：点击后**直接进入手动滚动**，选区边框持续可见；用户滚动实时页面，HUD 显示采集进度。
 - [ ] HUD「自动滚动」：未授权辅助功能时提示并保持手动；授权后自动滚动并与已拼接内容连续。
 - [ ] 完成/取消/自动无变化/手动长时间无变化/20000px 上限均正确停止并进入预览确认。

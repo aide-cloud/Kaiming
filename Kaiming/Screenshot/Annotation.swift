@@ -14,7 +14,7 @@ enum AnnotationTool: String, CaseIterable, Identifiable, Sendable {
 
     var title: String {
         switch self {
-        case .select: "调整选区"
+        case .select: "调整选区 / 编辑标注"
         case .pen: "画笔（手写）"
         case .rectangle: "矩形"
         case .arrow: "箭头"
@@ -115,6 +115,45 @@ enum AnnotationGeometry {
     static let minimumPenSampleDistance: CGFloat = 0.6
     /// 手写笔迹的默认线宽（点），比矩形/箭头略粗，接近日常手写笔。
     static let penLineWidth: CGFloat = 4
+    /// 点击选中已有标注的命中容差（点）。
+    static let hitTolerance: CGFloat = 6
+    /// 选中标注后编辑手柄的显示边长与命中容差（点）。
+    static let editHandleSize: CGFloat = 7
+    static let editHandleHitTolerance: CGFloat = 9
+    /// 缩放已有标注时的最小尺寸（点）。
+    static let minimumEditSize: CGFloat = 4
+
+    /// 选中标注后的编辑手柄。矩形/马赛克使用 8 个包围盒手柄，
+    /// 箭头使用起点/终点两个手柄，文字与手写笔迹只支持整体拖动。
+    enum EditHandle: Hashable, Sendable {
+        case topLeft, top, topRight, right, bottomRight, bottom, bottomLeft, left
+        case arrowStart, arrowEnd
+
+        /// 复用选区缩放的几何计算。
+        var screenHandle: ScreenGeometry.Handle? {
+            switch self {
+            case .topLeft: .topLeft
+            case .top: .top
+            case .topRight: .topRight
+            case .right: .right
+            case .bottomRight: .bottomRight
+            case .bottom: .bottom
+            case .bottomLeft: .bottomLeft
+            case .left: .left
+            case .arrowStart, .arrowEnd: nil
+            }
+        }
+    }
+
+    /// 标注绘制使用的字体。测量、预览与最终导出共用，避免尺寸漂移。
+    static var textFont: NSFont {
+        NSFont.systemFont(ofSize: textFontSize, weight: .semibold)
+    }
+
+    static func textSize(for text: String) -> CGSize {
+        guard !text.isEmpty else { return .zero }
+        return (text as NSString).size(withAttributes: [.font: textFont])
+    }
 
     static func normalizedRect(from start: CGPoint, to end: CGPoint) -> CGRect {
         CGRect(
@@ -223,5 +262,232 @@ enum AnnotationGeometry {
             path.addLine(to: last)
         }
         return path
+    }
+
+    // MARK: - 已有标注：包围盒 / 命中 / 拖动 / 缩放
+
+    static func arrowHeadMetrics(lineWidth: CGFloat) -> (length: CGFloat, width: CGFloat) {
+        (max(10, lineWidth * 4), max(9, lineWidth * 3.5))
+    }
+
+    /// 标注的绘制包围盒（坐标与 `Annotation.start/end` 一致）。
+    static func bounds(of annotation: Annotation) -> CGRect {
+        switch annotation.kind {
+        case .rectangle, .mosaic:
+            return normalizedRect(from: annotation.start, to: annotation.end)
+
+        case .arrow:
+            let rect = normalizedRect(from: annotation.start, to: annotation.end)
+            let metrics = arrowHeadMetrics(lineWidth: annotation.lineWidth)
+            let pad = max(metrics.length, metrics.width) / 2 + annotation.lineWidth
+            return rect.insetBy(dx: -pad, dy: -pad)
+
+        case .text:
+            guard let text = annotation.text, !text.isEmpty else {
+                return CGRect(origin: annotation.start, size: .zero)
+            }
+            return CGRect(origin: annotation.start, size: textSize(for: text))
+
+        case .pen:
+            let points = annotation.points.isEmpty ? [annotation.start] : annotation.points
+            var minX = points[0].x
+            var maxX = points[0].x
+            var minY = points[0].y
+            var maxY = points[0].y
+            for point in points.dropFirst() {
+                minX = min(minX, point.x)
+                maxX = max(maxX, point.x)
+                minY = min(minY, point.y)
+                maxY = max(maxY, point.y)
+            }
+            let pad = max(annotation.lineWidth / 2, 1.5) + 2
+            return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+                .insetBy(dx: -pad, dy: -pad)
+        }
+    }
+
+    /// 点到线段的最短距离。
+    static func distance(from point: CGPoint, toSegmentFrom start: CGPoint, to end: CGPoint) -> CGFloat {
+        let dx = end.x - start.x
+        let dy = end.y - start.y
+        let lengthSquared = dx * dx + dy * dy
+        guard lengthSquared > 0.0001 else {
+            return hypot(point.x - start.x, point.y - start.y)
+        }
+        let t = min(1, max(0, ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared))
+        let projected = CGPoint(x: start.x + t * dx, y: start.y + t * dy)
+        return hypot(point.x - projected.x, point.y - projected.y)
+    }
+
+    /// 点是否命中某条标注（用于点击选中）。后绘制的标注优先由调用方处理。
+    static func hitTest(_ annotation: Annotation, at point: CGPoint, tolerance: CGFloat = hitTolerance) -> Bool {
+        switch annotation.kind {
+        case .rectangle, .mosaic, .text:
+            return bounds(of: annotation).insetBy(dx: -tolerance, dy: -tolerance).contains(point)
+
+        case .arrow:
+            return distance(from: point, toSegmentFrom: annotation.start, to: annotation.end)
+                <= tolerance + annotation.lineWidth / 2
+
+        case .pen:
+            let points = annotation.points.isEmpty ? [annotation.start] : annotation.points
+            let limit = tolerance + annotation.lineWidth / 2
+            guard points.count > 1 else {
+                return hypot(point.x - points[0].x, point.y - points[0].y) <= limit
+            }
+            for index in 1..<points.count {
+                if distance(from: point, toSegmentFrom: points[index - 1], to: points[index]) <= limit {
+                    return true
+                }
+            }
+            return false
+        }
+    }
+
+    /// 整体平移标注，并保证标注不会被拖出选区。
+    static func moved(_ annotation: Annotation, by delta: CGSize, within container: CGRect) -> Annotation {
+        guard container.width > 0, container.height > 0 else { return annotation }
+        let shape = bounds(of: annotation)
+        let dx = clampedDelta(
+            delta.width,
+            shapeMin: shape.minX,
+            shapeMax: shape.maxX,
+            containerMin: container.minX,
+            containerMax: container.maxX
+        )
+        let dy = clampedDelta(
+            delta.height,
+            shapeMin: shape.minY,
+            shapeMax: shape.maxY,
+            containerMin: container.minY,
+            containerMax: container.maxY
+        )
+        return translated(annotation, by: CGSize(width: dx, height: dy))
+    }
+
+    /// 平移标注的所有坐标（不改尺寸）。
+    static func translated(_ annotation: Annotation, by delta: CGSize) -> Annotation {
+        var result = annotation
+        result.start = CGPoint(x: annotation.start.x + delta.width, y: annotation.start.y + delta.height)
+        result.end = CGPoint(x: annotation.end.x + delta.width, y: annotation.end.y + delta.height)
+        if !annotation.points.isEmpty {
+            result.points = annotation.points.map {
+                CGPoint(x: $0.x + delta.width, y: $0.y + delta.height)
+            }
+        }
+        return result
+    }
+
+    private static func clampedDelta(
+        _ delta: CGFloat,
+        shapeMin: CGFloat,
+        shapeMax: CGFloat,
+        containerMin: CGFloat,
+        containerMax: CGFloat
+    ) -> CGFloat {
+        let shapeSize = shapeMax - shapeMin
+        let containerSize = containerMax - containerMin
+        guard shapeSize < containerSize else {
+            // 文字可能比选区更宽：此时只保持左/下边缘对齐，避免来回跳动。
+            return containerMin - shapeMin
+        }
+        return min(max(delta, containerMin - shapeMin), containerMax - shapeMax)
+    }
+
+    /// 当前标注可用的编辑手柄（坐标与标注一致）。
+    static func editHandles(
+        for annotation: Annotation,
+        size: CGFloat = editHandleSize
+    ) -> [EditHandle: CGRect] {
+        let half = size / 2
+        func box(_ point: CGPoint) -> CGRect {
+            CGRect(x: point.x - half, y: point.y - half, width: size, height: size)
+        }
+
+        switch annotation.kind {
+        case .rectangle, .mosaic:
+            let rect = normalizedRect(from: annotation.start, to: annotation.end)
+            return [
+                .topLeft: box(CGPoint(x: rect.minX, y: rect.maxY)),
+                .top: box(CGPoint(x: rect.midX, y: rect.maxY)),
+                .topRight: box(CGPoint(x: rect.maxX, y: rect.maxY)),
+                .right: box(CGPoint(x: rect.maxX, y: rect.midY)),
+                .bottomRight: box(CGPoint(x: rect.maxX, y: rect.minY)),
+                .bottom: box(CGPoint(x: rect.midX, y: rect.minY)),
+                .bottomLeft: box(CGPoint(x: rect.minX, y: rect.minY)),
+                .left: box(CGPoint(x: rect.minX, y: rect.midY)),
+            ]
+        case .arrow:
+            return [
+                .arrowStart: box(annotation.start),
+                .arrowEnd: box(annotation.end),
+            ]
+        case .text, .pen:
+            return [:]
+        }
+    }
+
+    /// 命中某个编辑手柄（优先角点）。
+    static func editHandle(
+        at point: CGPoint,
+        of annotation: Annotation,
+        tolerance: CGFloat = editHandleHitTolerance
+    ) -> EditHandle? {
+        let handles = editHandles(for: annotation)
+        let ordered: [EditHandle] = [
+            .topLeft, .topRight, .bottomLeft, .bottomRight,
+            .top, .bottom, .left, .right,
+            .arrowStart, .arrowEnd,
+        ]
+        for handle in ordered {
+            guard let rect = handles[handle] else { continue }
+            if rect.insetBy(dx: -tolerance, dy: -tolerance).contains(point) {
+                return handle
+            }
+        }
+        return nil
+    }
+
+    /// 拖动编辑手柄后的新标注。矩形/马赛克缩放包围盒，箭头移动单个端点。
+    static func resized(
+        _ annotation: Annotation,
+        handle: EditHandle,
+        to point: CGPoint,
+        minSize: CGFloat = minimumEditSize,
+        bounds container: CGRect
+    ) -> Annotation {
+        switch annotation.kind {
+        case .rectangle, .mosaic:
+            guard let screenHandle = handle.screenHandle else { return annotation }
+            let rect = normalizedRect(from: annotation.start, to: annotation.end)
+            let resized = ScreenGeometry.resized(
+                rect,
+                handle: screenHandle,
+                to: point,
+                minSize: minSize,
+                bounds: container
+            )
+            var result = annotation
+            result.start = CGPoint(x: resized.minX, y: resized.minY)
+            result.end = CGPoint(x: resized.maxX, y: resized.maxY)
+            return result
+
+        case .arrow:
+            var result = annotation
+            let clamped = clampedPoint(point, to: container)
+            switch handle {
+            case .arrowStart:
+                result.start = clamped
+            case .arrowEnd:
+                result.end = clamped
+            default:
+                return annotation
+            }
+            let length = hypot(result.end.x - result.start.x, result.end.y - result.start.y)
+            return length >= minSize ? result : annotation
+
+        case .text, .pen:
+            return annotation
+        }
     }
 }

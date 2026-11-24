@@ -57,6 +57,10 @@ final class CaptureOverlayController: NSObject {
         case resizing(handle: ScreenGeometry.Handle, initial: CGRect)
         case moving(start: CGPoint, initial: CGRect)
         case annotating(kind: Annotation.Kind, start: CGPoint)
+        /// 拖动已有标注。
+        case movingAnnotation(id: UUID, start: CGPoint, initial: Annotation)
+        /// 拖动已有标注的编辑手柄（矩形/马赛克缩放、箭头端点）。
+        case resizingAnnotation(id: UUID, initial: Annotation, handle: AnnotationGeometry.EditHandle)
     }
 
     private enum LongCapturePhase {
@@ -94,6 +98,12 @@ final class CaptureOverlayController: NSObject {
     private var textField: NSTextField?
     private var textFieldOrigin: CGPoint = .zero
     private var isCommittingText = false
+    /// 双击已有文字标注时，记录正在编辑的标注 ID；提交时更新而不是新增。
+    private var editingTextAnnotationID: UUID?
+    /// 拖动/缩放标注时，只在第一次真正改变前记录一次撤销快照。
+    private var annotationEditSnapshotPending = false
+    /// 首次画完标注时提示一次「可拖动/双击编辑/删除」，避免用户不知道新交互。
+    private var didShowAnnotationEditingHint = false
 
     // MARK: 长截图
 
@@ -307,11 +317,15 @@ final class CaptureOverlayController: NSObject {
 
     func handleKeyDown(_ event: NSEvent) -> NSEvent? {
         guard !isFinished, let eventWindow = event.window else { return event }
-        let consumed = handleMonitoredKey(keyCode: event.keyCode, windowNumber: eventWindow.windowNumber)
+        let consumed = handleMonitoredKey(
+            keyCode: event.keyCode,
+            windowNumber: eventWindow.windowNumber,
+            command: event.modifierFlags.contains(.command)
+        )
         return consumed ? nil : event
     }
 
-    private func handleMonitoredKey(keyCode: UInt16, windowNumber: Int) -> Bool {
+    private func handleMonitoredKey(keyCode: UInt16, windowNumber: Int, command: Bool) -> Bool {
         guard !isFinished, textField == nil else { return false }
 
         switch longCapturePhase {
@@ -330,17 +344,30 @@ final class CaptureOverlayController: NSObject {
 
         case .idle, .preview:
             guard windows.contains(where: { $0.windowNumber == windowNumber }) else { return false }
-            return handleKeyCode(keyCode)
+            return handleKeyCode(keyCode, command: command)
         }
     }
 
-    /// 返回 true 表示事件已被消费（Return 确认 / Esc 取消）。
-    private func handleKeyCode(_ keyCode: UInt16) -> Bool {
+    /// 返回 true 表示事件已被消费。
+    /// - Return 确认；Esc 先取消选中标注、再取消截图；
+    /// - Delete / 退格删除选中标注；⌘Z 撤销上一步标注操作。
+    private func handleKeyCode(_ keyCode: UInt16, command: Bool) -> Bool {
+        if command, keyCode == 6 { // Z
+            return session.undo()
+        }
         switch keyCode {
+        case 51, 117: // Delete / 前向删除
+            guard session.canDeleteSelectedAnnotation else { return false }
+            session.deleteSelected()
+            return true
         case 36, 76: // Return / 小键盘 Enter
             confirm()
             return true
         case 53: // Esc
+            if session.selectedAnnotation != nil {
+                session.select(nil)
+                return true
+            }
             cancel()
             return true
         default:
@@ -400,6 +427,9 @@ final class CaptureOverlayController: NSObject {
         draft = nil
         activeScreen = nil
         activeSelectionRect = nil
+        editingTextAnnotationID = nil
+        annotationEditSnapshotPending = false
+        didShowAnnotationEditingHint = false
         onFinish = nil
         onCancel = nil
     }
@@ -413,8 +443,13 @@ final class CaptureOverlayController: NSObject {
             guard let self else { return event }
             let keyCode = event.keyCode
             let windowNumber = event.windowNumber
+            let command = event.modifierFlags.contains(.command)
             let consumed = MainActor.assumeIsolated {
-                self.handleMonitoredKey(keyCode: keyCode, windowNumber: windowNumber)
+                self.handleMonitoredKey(
+                    keyCode: keyCode,
+                    windowNumber: windowNumber,
+                    command: command
+                )
             }
             return consumed ? nil : event
         }
@@ -436,6 +471,11 @@ final class CaptureOverlayController: NSObject {
                 MainActor.assumeIsolated { self?.refreshViews() }
             }
             .store(in: &cancellables)
+        session.$selectedAnnotationID
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated { self?.refreshViews() }
+            }
+            .store(in: &cancellables)
         session.$cornerRadius
             .sink { [weak self] _ in
                 MainActor.assumeIsolated { self?.refreshViews() }
@@ -447,6 +487,7 @@ final class CaptureOverlayController: NSObject {
 
     func mouseDown(at point: CGPoint, in frozenScreen: FrozenScreen, clickCount: Int) {
         guard isOverlayMouseEnabled, !isFinished, !isCapturingWindow else { return }
+        annotationEditSnapshotPending = false
         let local = ScreenGeometry.clamped(point, to: screenBounds(frozenScreen))
 
         if let target {
@@ -460,18 +501,64 @@ final class CaptureOverlayController: NSObject {
                 interaction = .resizing(handle: handle, initial: target.rect)
                 return
             }
+            guard target.rect.contains(local) else { return }
+            let targetBounds = CGRect(origin: .zero, size: target.rect.size)
+            let annotationPoint = ScreenGeometry.localPoint(fromViewPoint: local, targetRect: target.rect)
+
+            // 已选中的标注在任意工具下都可直接编辑：每次画完会自动选中，
+            // 因此不需要先切回「调整选区 / 编辑标注」也能立刻拖动、缩放、双击编辑文字。
+            if let selected = session.selectedAnnotation,
+               targetBounds.contains(annotationPoint) {
+                if clickCount >= 2,
+                   selected.kind == .text,
+                   AnnotationGeometry.hitTest(selected, at: annotationPoint) {
+                    beginTextEditing(existing: selected, in: frozenScreen)
+                    return
+                }
+                if let handle = AnnotationGeometry.editHandle(at: annotationPoint, of: selected) {
+                    interaction = .resizingAnnotation(id: selected.id, initial: selected, handle: handle)
+                    annotationEditSnapshotPending = true
+                    return
+                }
+                if AnnotationGeometry.hitTest(selected, at: annotationPoint) {
+                    interaction = .movingAnnotation(id: selected.id, start: local, initial: selected)
+                    annotationEditSnapshotPending = true
+                    return
+                }
+            }
+
             if session.tool == .select {
-                guard target.rect.contains(local) else { return }
                 if clickCount >= 2 {
+                    if let hit = annotation(at: local, in: target) {
+                        // 文字标注双击进入内容编辑，其它类型双击只选中。
+                        if hit.kind == .text {
+                            beginTextEditing(existing: hit, in: frozenScreen)
+                        } else {
+                            session.select(hit.id)
+                        }
+                        return
+                    }
                     confirm()
                     return
                 }
+
+                // 单击已有标注：选中并开始整体拖动；点击空白处仍移动整个选区。
+                if let hit = annotation(at: local, in: target) {
+                    session.select(hit.id)
+                    interaction = .movingAnnotation(id: hit.id, start: local, initial: hit)
+                    annotationEditSnapshotPending = true
+                    return
+                }
+
+                session.select(nil)
                 if target.source == .region {
                     interaction = .moving(start: local, initial: target.rect)
                 }
                 return
             }
-            guard target.rect.contains(local) else { return }
+
+            // 绘制工具：点击空白处才收起选中框并开始下一条标注。
+            session.select(nil)
             if session.tool == .text {
                 beginTextEditing(at: local, in: frozenScreen)
                 return
@@ -483,9 +570,7 @@ final class CaptureOverlayController: NSObject {
             case .mosaic: kind = .mosaic
             default: kind = .rectangle
             }
-            let targetBounds = CGRect(origin: .zero, size: target.rect.size)
-            let annotationStart = ScreenGeometry.localPoint(fromViewPoint: local, targetRect: target.rect)
-            let clampedStart = AnnotationGeometry.clampedPoint(annotationStart, to: targetBounds)
+            let clampedStart = AnnotationGeometry.clampedPoint(annotationPoint, to: targetBounds)
             interaction = .annotating(kind: kind, start: clampedStart)
             draft = Annotation(
                 kind: kind,
@@ -539,6 +624,31 @@ final class CaptureOverlayController: NSObject {
             target.rect = ScreenGeometry.moved(initial, by: delta, bounds: screenBounds(frozenScreen))
             self.target = target
             layoutToolbar()
+            refreshViews()
+
+        case let .movingAnnotation(id, start, initial):
+            guard let target, target.screen.displayID == frozenScreen.displayID,
+                  session.annotation(id: id) != nil else { return }
+            let delta = CGSize(width: local.x - start.x, height: local.y - start.y)
+            guard abs(delta.width) > 0.01 || abs(delta.height) > 0.01 else { return }
+            ensureAnnotationEditSnapshot()
+            let moved = AnnotationGeometry.moved(initial, by: delta, within: targetBounds(target))
+            session.replace(moved)
+            refreshViews()
+
+        case let .resizingAnnotation(id, initial, handle):
+            guard let target, target.screen.displayID == frozenScreen.displayID,
+                  session.annotation(id: id) != nil else { return }
+            let point = ScreenGeometry.localPoint(fromViewPoint: local, targetRect: target.rect)
+            let resized = AnnotationGeometry.resized(
+                initial,
+                handle: handle,
+                to: point,
+                bounds: targetBounds(target)
+            )
+            guard resized != initial else { return }
+            ensureAnnotationEditSnapshot()
+            session.replace(resized)
             refreshViews()
 
         case .annotating:
@@ -600,14 +710,21 @@ final class CaptureOverlayController: NSObject {
                 points: draft.points
             ) {
                 session.add(draft)
+                // 画完立即选中：不用切换工具就能继续拖动/缩放/删除/双击编辑。
+                session.select(draft.id)
+                if !didShowAnnotationEditingHint {
+                    didShowAnnotationEditingHint = true
+                    showOverlayNotice("已选中标注：拖动移动 · 双击文字编辑 · Delete / 垃圾桶删除")
+                }
             }
             self.draft = nil
 
-        case .resizing, .moving, .none:
+        case .resizing, .moving, .movingAnnotation, .resizingAnnotation, .none:
             break
         }
 
         interaction = .none
+        annotationEditSnapshotPending = false
         refreshViews()
     }
 
@@ -629,10 +746,7 @@ final class CaptureOverlayController: NSObject {
         case .window:
             if let target {
                 guard target.screen.displayID == frozenScreen.displayID else { return .arrow }
-                if target.rect.contains(local), session.tool != .select {
-                    return .crosshair
-                }
-                return .arrow
+                return targetCursor(at: local, target: target, allowsMovingSelection: false)
             }
             return candidate(at: globalPoint(for: local, in: frozenScreen)) != nil ? .pointingHand : .crosshair
 
@@ -646,15 +760,40 @@ final class CaptureOverlayController: NSObject {
                    ) {
                     return resizeCursor(for: handle)
                 }
-                if target.rect.contains(local) {
-                    if session.tool == .select {
-                        if target.source != .region { return .arrow }
-                        return isMoving ? .closedHand : .openHand
-                    }
-                    return .crosshair
-                }
-                return .arrow
+                return targetCursor(at: local, target: target, allowsMovingSelection: true)
             }
+            return .crosshair
+        }
+    }
+
+    /// 已有选区内：优先显示标注编辑手柄/拖动光标，其次才是移动选区。
+    private func targetCursor(
+        at local: CGPoint,
+        target: Target,
+        allowsMovingSelection: Bool
+    ) -> NSCursor {
+        guard target.rect.contains(local) else { return .arrow }
+        guard session.tool == .select else { return .crosshair }
+
+        let annotationPoint = ScreenGeometry.localPoint(fromViewPoint: local, targetRect: target.rect)
+        if let selected = session.selectedAnnotation,
+           let handle = AnnotationGeometry.editHandle(at: annotationPoint, of: selected) {
+            return cursor(forAnnotationHandle: handle)
+        }
+        if annotation(at: local, in: target) != nil {
+            return isMovingAnnotation ? .closedHand : .openHand
+        }
+        guard allowsMovingSelection else { return .arrow }
+        return isMoving ? .closedHand : .openHand
+    }
+
+    private func cursor(forAnnotationHandle handle: AnnotationGeometry.EditHandle) -> NSCursor {
+        switch handle {
+        case .top, .bottom:
+            return .resizeUpDown
+        case .left, .right:
+            return .resizeLeftRight
+        case .topLeft, .topRight, .bottomLeft, .bottomRight, .arrowStart, .arrowEnd:
             return .crosshair
         }
     }
@@ -730,22 +869,44 @@ final class CaptureOverlayController: NSObject {
     // MARK: - 文本标注
 
     private func beginTextEditing(at screenPoint: CGPoint, in frozenScreen: FrozenScreen) {
+        beginTextEditing(at: screenPoint, in: frozenScreen, existing: nil)
+    }
+
+    /// 双击已有文字标注时，把输入框放到原来的文字位置并预填内容。
+    private func beginTextEditing(existing annotation: Annotation, in frozenScreen: FrozenScreen) {
+        guard let target, target.screen.displayID == frozenScreen.displayID else { return }
+        let screenPoint = CGPoint(
+            x: target.rect.minX + annotation.start.x,
+            y: target.rect.minY + annotation.start.y - 2
+        )
+        beginTextEditing(at: screenPoint, in: frozenScreen, existing: annotation)
+    }
+
+    private func beginTextEditing(
+        at screenPoint: CGPoint,
+        in frozenScreen: FrozenScreen,
+        existing: Annotation?
+    ) {
         guard let target, target.screen.displayID == frozenScreen.displayID,
               let view = view(for: frozenScreen) else { return }
         commitTextEditing()
 
-        let field = NSTextField(frame: CGRect(x: screenPoint.x, y: screenPoint.y, width: 240, height: 26))
-        field.font = .systemFont(ofSize: AnnotationGeometry.textFontSize, weight: .semibold)
-        field.textColor = session.color.nsColor
+        let initialText = existing?.text ?? ""
+        let width = max(240, AnnotationGeometry.textSize(for: initialText).width + 24)
+        let field = NSTextField(frame: CGRect(x: screenPoint.x, y: screenPoint.y, width: width, height: 26))
+        field.font = AnnotationGeometry.textFont
+        field.textColor = (existing?.color ?? session.color).nsColor
         field.backgroundColor = NSColor.black.withAlphaComponent(0.35)
         field.drawsBackground = true
         field.isBordered = false
         field.focusRingType = .none
-        field.placeholderString = "输入文字，Return 确认"
+        field.placeholderString = existing == nil ? "输入文字，Return 确认" : "编辑文字，Return 确认"
+        field.stringValue = initialText
         field.delegate = self
         view.addSubview(field)
         textField = field
         textFieldOrigin = screenPoint
+        editingTextAnnotationID = existing?.id
         view.window?.makeFirstResponder(field)
         refreshViews()
     }
@@ -760,6 +921,8 @@ final class CaptureOverlayController: NSObject {
         let origin = textFieldOrigin
         let color = session.color
         let targetSnapshot = target
+        let editingID = editingTextAnnotationID
+        editingTextAnnotationID = nil
 
         field.delegate = nil
         field.removeFromSuperview()
@@ -767,7 +930,21 @@ final class CaptureOverlayController: NSObject {
             view.window?.makeFirstResponder(view)
         }
 
-        if !text.isEmpty, let targetSnapshot {
+        if let editingID {
+            // 编辑已有文字：空内容视为删除；内容未变则不产生撤销记录。
+            guard let existing = session.annotation(id: editingID) else {
+                refreshViews()
+                return
+            }
+            if text.isEmpty {
+                session.delete(editingID)
+            } else if text != existing.text {
+                var updated = existing
+                updated.text = text
+                session.beginMutation()
+                session.replace(updated)
+            }
+        } else if !text.isEmpty, let targetSnapshot {
             let bounds = CGRect(origin: .zero, size: targetSnapshot.rect.size)
             let local = CGPoint(
                 x: origin.x - targetSnapshot.rect.minX,
@@ -782,6 +959,7 @@ final class CaptureOverlayController: NSObject {
     private func cancelTextEditing() {
         guard let field = textField else { return }
         textField = nil
+        editingTextAnnotationID = nil
         field.delegate = nil
         field.removeFromSuperview()
         if let target, let view = view(for: target.screen) {
@@ -1347,16 +1525,21 @@ final class CaptureOverlayController: NSObject {
 
     // MARK: - 绘制
 
+#if DEBUG
+    /// 调试用：直接注入目标选区，便于在离屏 bitmap 里验证覆盖层预览的透明圆角。
+    func debugInstallTargetForRenderTest(_ target: Target) {
+        self.target = target
+    }
+#endif
+
     func draw(frozenScreen: FrozenScreen, in view: CaptureOverlayView) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
         let bounds = screenBounds(frozenScreen)
         let cornerRadius = session.clampedCornerRadius
 
-        context.saveGState()
-        context.interpolationQuality = .high
-        context.draw(frozenScreen.image, in: bounds)
-        context.restoreGState()
-
+        // 选区（或正在拖拽的框选）所在矩形。底图与暗色遮罩只画在这个矩形之外，
+        // 矩形内部由下面「按圆角裁剪的内容」负责。这样四个圆角区域完全不被绘制，
+        // 覆盖层窗口的透明背景直接露出桌面，与最终 PNG 的透明圆角保持一致。
         let clearRect: CGRect?
         if let target, target.screen.displayID == frozenScreen.displayID {
             clearRect = target.rect
@@ -1369,34 +1552,35 @@ final class CaptureOverlayController: NSObject {
             clearRect = nil
         }
 
+        // 1. 暗色遮罩 + 冻结屏图（只在选区矩形之外绘制）。
         context.saveGState()
-        context.setFillColor(NSColor.black.withAlphaComponent(0.42).cgColor)
+        context.interpolationQuality = .high
         if let clearRect {
             let path = CGMutablePath()
             path.addRect(bounds)
-            path.addPath(RoundedMask.path(for: clearRect, radius: cornerRadius))
+            path.addRect(clearRect)
             context.addPath(path)
-            context.fillPath(using: .evenOdd)
-        } else {
-            context.fill(bounds)
+            context.clip(using: .evenOdd)
         }
+        context.draw(frozenScreen.image, in: bounds)
+        context.setFillColor(NSColor.black.withAlphaComponent(0.42).cgColor)
+        context.fill(bounds)
         context.restoreGState()
 
-        if let target,
-           target.source != .region,
-           target.screen.displayID == frozenScreen.displayID,
-           let image = target.image,
-           target.rect.width > 0, target.rect.height > 0 {
+        if let target, target.screen.displayID == frozenScreen.displayID {
+            // 2. 选区内部按圆角裁剪绘制内容；圆角外不落笔，保持完全透明。
             context.saveGState()
             context.addPath(RoundedMask.path(for: target.rect, radius: cornerRadius))
             context.clip()
-            context.draw(image, in: target.rect)
-            context.restoreGState()
-        }
+            if target.source == .region {
+                context.interpolationQuality = .high
+                context.draw(frozenScreen.image, in: bounds)
+            } else if let image = target.image {
+                context.interpolationQuality = .high
+                context.draw(image, in: target.rect)
+            }
 
-        if let target, target.screen.displayID == frozenScreen.displayID {
-            // 马赛克直接从覆盖层当前展示的底图取像素：区域截图取冻结屏图，
-            // 窗口 / 长截图预览取已合成的目标图，保证预览与最终 PNG 看到的是同一块像素。
+            // 3. 标注（马赛克直接取覆盖层当前展示的底图像素）。
             let mosaicSource: MosaicSource
             if target.source != .region, let image = target.image {
                 mosaicSource = MosaicSource(
@@ -1411,9 +1595,6 @@ final class CaptureOverlayController: NSObject {
                     pointOrigin: .zero
                 )
             }
-            context.saveGState()
-            context.addPath(RoundedMask.path(for: target.rect, radius: cornerRadius))
-            context.clip()
             for annotation in session.annotations {
                 AnnotationDrawing.draw(
                     annotation: annotation,
@@ -1432,7 +1613,14 @@ final class CaptureOverlayController: NSObject {
             }
             context.restoreGState()
 
-            clearRoundedCorners(rect: target.rect, radius: cornerRadius, context: context)
+            // 4. 已有标注的选中框/编辑手柄。
+            if let selected = session.selectedAnnotation {
+                drawAnnotationSelection(
+                    annotation: selected,
+                    origin: target.rect.origin,
+                    context: context
+                )
+            }
 
             drawChrome(
                 rect: target.rect,
@@ -1443,14 +1631,18 @@ final class CaptureOverlayController: NSObject {
                 windowTitle: target.title,
                 viewBounds: bounds
             )
-        }
+        } else if let activeScreen,
+                  activeScreen.displayID == frozenScreen.displayID,
+                  let selection = activeSelectionRect,
+                  selection.width > 0.5, selection.height > 0.5 {
+            // 正在框选：同样只在圆角内部绘制冻结屏图，四角保持透明。
+            context.saveGState()
+            context.addPath(RoundedMask.path(for: selection, radius: cornerRadius))
+            context.clip()
+            context.interpolationQuality = .high
+            context.draw(frozenScreen.image, in: bounds)
+            context.restoreGState()
 
-        if let activeScreen,
-           activeScreen.displayID == frozenScreen.displayID,
-           target == nil,
-           let selection = activeSelectionRect,
-           selection.width > 0.5, selection.height > 0.5 {
-            clearRoundedCorners(rect: selection, radius: cornerRadius, context: context)
             drawChrome(
                 rect: selection,
                 cornerRadius: cornerRadius,
@@ -1502,16 +1694,36 @@ final class CaptureOverlayController: NSObject {
         }
     }
 
-    /// 覆盖层预览也把圆角外区域真正“挖空”，让窗口透明处露出桌面，
-    /// 与最终 PNG 的圆角外透明保持一致（而不是只有边框变圆）。
-    private func clearRoundedCorners(rect: CGRect, radius: CGFloat, context: CGContext) {
-        let clamped = RoundedMask.clampedRadius(radius, in: rect)
-        guard clamped > 0 else { return }
+    /// 选中已有标注时绘制虚线包围盒与编辑手柄。
+    private func drawAnnotationSelection(
+        annotation: Annotation,
+        origin: CGPoint,
+        context: CGContext
+    ) {
+        let selectionRect = AnnotationGeometry.bounds(of: annotation)
+            .offsetBy(dx: origin.x, dy: origin.y)
+            .insetBy(dx: -3, dy: -3)
+        guard selectionRect.width > 0, selectionRect.height > 0 else { return }
+
+        let accent = NSColor.controlAccentColor
         context.saveGState()
-        context.setBlendMode(.clear)
-        context.addPath(CGPath(rect: rect, transform: nil))
-        context.addPath(RoundedMask.path(for: rect, radius: clamped))
-        context.fillPath(using: .evenOdd)
+        context.setStrokeColor(accent.cgColor)
+        context.setLineWidth(1)
+        context.setLineDash(phase: 0, lengths: [4, 3])
+        context.stroke(selectionRect)
+        context.setLineDash(phase: 0, lengths: [])
+        context.setFillColor(NSColor.white.cgColor)
+        context.setLineWidth(1)
+        for (handle, rect) in AnnotationGeometry.editHandles(for: annotation) {
+            let handleRect = rect.offsetBy(dx: origin.x, dy: origin.y)
+            if handle == .arrowStart || handle == .arrowEnd {
+                context.fillEllipse(in: handleRect)
+                context.strokeEllipse(in: handleRect)
+            } else {
+                context.fill(handleRect)
+                context.stroke(handleRect)
+            }
+        }
         context.restoreGState()
     }
 
@@ -1689,6 +1901,31 @@ final class CaptureOverlayController: NSObject {
     private var isMoving: Bool {
         if case .moving = interaction { return true }
         return false
+    }
+
+    private var isMovingAnnotation: Bool {
+        if case .movingAnnotation = interaction { return true }
+        if case .resizingAnnotation = interaction { return true }
+        return false
+    }
+
+    private func targetBounds(_ target: Target) -> CGRect {
+        CGRect(origin: .zero, size: target.rect.size)
+    }
+
+    /// 命中某条已有标注（后绘制的优先）；坐标使用选区局部坐标系。
+    private func annotation(at point: CGPoint, in target: Target) -> Annotation? {
+        let local = ScreenGeometry.localPoint(fromViewPoint: point, targetRect: target.rect)
+        guard targetBounds(target).contains(local) else { return nil }
+        return session.annotations.reversed().first {
+            AnnotationGeometry.hitTest($0, at: local)
+        }
+    }
+
+    private func ensureAnnotationEditSnapshot() {
+        guard annotationEditSnapshotPending else { return }
+        session.beginMutation()
+        annotationEditSnapshotPending = false
     }
 
     private func screenBounds(_ frozenScreen: FrozenScreen) -> CGRect {

@@ -3,33 +3,100 @@ import SwiftUI
 /// 覆盖层上的标注状态。只在主线程读写，驱动 SwiftUI 工具栏与 AppKit 覆盖层重绘。
 @MainActor
 final class AnnotationSession: ObservableObject {
-    @Published var tool: AnnotationTool = .select
+    @Published var tool: AnnotationTool = .select {
+        didSet {
+            // 编辑标注只在「调整选区 / 编辑标注」工具下可用，切到绘制工具时收起选中框。
+            if tool != .select {
+                selectedAnnotationID = nil
+            }
+        }
+    }
     @Published var color: AnnotationColor = AnnotationColor.palette[0]
     /// 圆角半径（点），0–48；预览与最终 PNG 共用。
     @Published var cornerRadius: CGFloat = 0
     @Published private(set) var annotations: [Annotation] = []
+    /// 当前选中的已有标注；`nil` 表示没有选中。
+    @Published private(set) var selectedAnnotationID: UUID?
+
+    /// 撤销快照：每次新增/编辑/删除前压入一份完整标注数组。
+    private var undoStack: [[Annotation]] = []
+    private static let maxUndoDepth = 50
 
     var hasAnnotations: Bool { !annotations.isEmpty }
+    var canUndo: Bool { !undoStack.isEmpty }
     var clampedCornerRadius: CGFloat { max(0, min(cornerRadius, 48)) }
 
+    var selectedAnnotation: Annotation? {
+        guard let selectedAnnotationID else { return nil }
+        return annotations.first { $0.id == selectedAnnotationID }
+    }
+
+    var canDeleteSelectedAnnotation: Bool { selectedAnnotation != nil }
+
     func add(_ annotation: Annotation) {
+        beginMutation()
         annotations.append(annotation)
     }
 
-    func undo() {
-        guard !annotations.isEmpty else { return }
-        annotations.removeLast()
+    /// 记录一次可撤销的修改。拖动/缩放应在第一次真正改变几何前调用一次，
+    /// 之后连续的中间状态直接 `replace`，避免撤销栈被鼠标事件刷爆。
+    func beginMutation() {
+        undoStack.append(annotations)
+        if undoStack.count > Self.maxUndoDepth {
+            undoStack.removeFirst(undoStack.count - Self.maxUndoDepth)
+        }
     }
 
+    @discardableResult
+    func undo() -> Bool {
+        guard let snapshot = undoStack.popLast() else { return false }
+        annotations = snapshot
+        if let selectedAnnotationID,
+           !annotations.contains(where: { $0.id == selectedAnnotationID }) {
+            self.selectedAnnotationID = nil
+        }
+        return true
+    }
+
+    func select(_ id: UUID?) {
+        selectedAnnotationID = id
+    }
+
+    func annotation(id: UUID) -> Annotation? {
+        annotations.first { $0.id == id }
+    }
+
+    /// 替换一条已存在的标注（调用方负责在编辑开始时记录撤销快照）。
+    func replace(_ annotation: Annotation) {
+        guard let index = annotations.firstIndex(where: { $0.id == annotation.id }) else { return }
+        annotations[index] = annotation
+    }
+
+    func delete(_ id: UUID) {
+        guard annotations.contains(where: { $0.id == id }) else { return }
+        beginMutation()
+        annotations.removeAll { $0.id == id }
+        if selectedAnnotationID == id {
+            selectedAnnotationID = nil
+        }
+    }
+
+    func deleteSelected() {
+        guard let selectedAnnotationID else { return }
+        delete(selectedAnnotationID)
+    }
+
+    /// 新选择截图区域 / 进入长截图时调用：清空标注并丢弃撤销历史。
     func clear() {
-        guard !annotations.isEmpty else { return }
         annotations.removeAll()
+        undoStack.removeAll()
+        selectedAnnotationID = nil
     }
 }
 
 /// 覆盖层底部/顶部的轻量标注工具栏。
 struct AnnotationToolbar: View {
-    static let preferredSize = CGSize(width: 750, height: 44)
+    static let preferredSize = CGSize(width: 790, height: 44)
 
     @ObservedObject var session: AnnotationSession
     /// 只有区域截图（未进入长截图流程）才显示长截图入口。
@@ -60,8 +127,19 @@ struct AnnotationToolbar: View {
                     .frame(width: 24, height: 24)
             }
             .buttonStyle(.plain)
-            .disabled(!session.hasAnnotations)
-            .help("撤销上一条标注")
+            .disabled(!session.canUndo)
+            .help("撤销上一步（⌘Z）")
+
+            Button {
+                session.deleteSelected()
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 11, weight: .medium))
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(.plain)
+            .disabled(!session.canDeleteSelectedAnnotation)
+            .help("删除选中的标注（Delete）")
 
             divider
 
@@ -144,7 +222,11 @@ struct AnnotationToolbar: View {
                 .foregroundStyle(session.tool == tool ? Color.accentColor : Color.primary)
         }
         .buttonStyle(.plain)
-        .help(tool.title)
+        .help(
+            tool == .select
+                ? "调整选区；单击已有标注可拖动，双击文字编辑，Delete 删除"
+                : tool.title
+        )
     }
 
     private func colorButton(_ color: AnnotationColor) -> some View {

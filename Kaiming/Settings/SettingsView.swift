@@ -118,6 +118,11 @@ private struct ScreenshotSettingsPane: View {
                     }
                 }
                 .pickerStyle(.segmented)
+
+                Text("PNG 保留圆角外的透明区域；JPEG 不支持透明，自动保存的圆角外会变成不透明底色（剪贴板会附带 PNG 回退，截图历史固定为 PNG）。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Section("保存位置") {

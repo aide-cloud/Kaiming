@@ -95,6 +95,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         handleSnapshotArguments()
+        handleRenderTestArguments()
 
         #endif
     }
@@ -159,6 +160,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     .environmentObject(AppState.shared)
             )
             snapshotViaWindow(root: root, size: CGSize(width: 580, height: 560), path: path)
+            return
+        }
+
+        if let index = args.firstIndex(of: "--snapshot-annotation-toolbar"), index + 1 < args.count {
+            let path = args[index + 1]
+            let session = AnnotationSession()
+            session.cornerRadius = 20
+            session.add(
+                Annotation(
+                    kind: .rectangle,
+                    start: CGPoint(x: 20, y: 20),
+                    end: CGPoint(x: 120, y: 80),
+                    color: AnnotationColor.palette[0]
+                )
+            )
+            session.select(session.annotations[0].id)
+            let root = AnyView(
+                AnnotationToolbar(
+                    session: session,
+                    showsLongCapture: true,
+                    onStartLongCapture: {},
+                    onComplete: {},
+                    onCancel: {}
+                )
+            )
+            snapshotViaWindow(root: root, size: AnnotationToolbar.preferredSize, path: path)
             return
         }
 
@@ -314,6 +341,208 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             NSApp.terminate(nil)
         }
+    }
+
+    /// 圆角透明回归：合成底图 + 标注拍平后，验证四个圆角 alpha=0，
+    /// 并做一次 PNG 编码/解码往返校验，确保写出的文件同样保留透明角。
+    /// 用法：`Kaiming --render-test-rounded /tmp/rounded.png`（DEBUG）。
+    private func handleRenderTestArguments() {
+        let args = ProcessInfo.processInfo.arguments
+        if args.contains("--logic-test-annotations") {
+            AnnotationEditingTest.run()
+            return
+        }
+        if args.contains("--logic-test-overlay-interactions") {
+            CaptureOverlayRenderTest.runInteractionTest()
+            return
+        }
+        if args.contains("--logic-test-overlay-view") {
+            CaptureOverlayRenderTest.runViewPathTest()
+            return
+        }
+        if let index = args.firstIndex(of: "--render-test-overlay-corners"),
+           index + 1 < args.count {
+            CaptureOverlayRenderTest.run(outputPath: args[index + 1])
+            return
+        }
+        guard let index = args.firstIndex(of: "--render-test-rounded"),
+              index + 1 < args.count else { return }
+        let path = args[index + 1]
+
+        let width = 640
+        let height = 400
+        guard let base = Self.makeRenderTestBaseImage(width: width, height: height) else {
+            NSLog("Kaiming debug: rounded render test FAIL: cannot create base image")
+            NSApp.terminate(nil)
+            return
+        }
+
+        let penPoints = stride(from: 0, through: 16, by: 1).map { step in
+            CGPoint(x: 260 + CGFloat(step) * 9, y: 260 + CGFloat((step * 7) % 40))
+        }
+        let annotations: [Annotation] = [
+            Annotation(
+                kind: .rectangle,
+                start: CGPoint(x: 40, y: 40),
+                end: CGPoint(x: 190, y: 150),
+                color: AnnotationColor.palette[0]
+            ),
+            Annotation(
+                kind: .arrow,
+                start: CGPoint(x: 250, y: 60),
+                end: CGPoint(x: 400, y: 190),
+                color: AnnotationColor.palette[4]
+            ),
+            Annotation(
+                kind: .text,
+                start: CGPoint(x: 50, y: 230),
+                color: AnnotationColor.palette[3],
+                text: "圆角透明测试"
+            ),
+            Annotation(
+                kind: .pen,
+                start: penPoints[0],
+                end: penPoints[penPoints.count - 1],
+                color: AnnotationColor.palette[1],
+                lineWidth: AnnotationGeometry.penLineWidth,
+                points: penPoints
+            ),
+            Annotation(
+                kind: .mosaic,
+                start: CGPoint(x: 380, y: 200),
+                end: CGPoint(x: 600, y: 355),
+                color: AnnotationColor.palette[0]
+            ),
+        ]
+
+        guard let rendered = AnnotationDrawing.render(
+            baseImage: base,
+            annotations: annotations,
+            boundsInPoints: CGSize(width: width, height: height),
+            cornerRadius: 28,
+            addsWindowHeader: true
+        ) else {
+            NSLog("Kaiming debug: rounded render test FAIL: render returned nil")
+            NSApp.terminate(nil)
+            return
+        }
+
+        var failures: [String] = Self.verifyTransparentCorners(rendered, label: "rendered")
+        var pngWritten = false
+        do {
+            let data = try CaptureHistory.encode(rendered, format: .png)
+            try data.write(to: URL(fileURLWithPath: path), options: .atomic)
+            pngWritten = true
+            if let image = NSImage(data: data) {
+                var rect = CGRect(origin: .zero, size: image.size)
+                if let decoded = image.cgImage(forProposedRect: &rect, context: nil, hints: nil) {
+                    failures += Self.verifyTransparentCorners(decoded, label: "png-roundtrip")
+                } else {
+                    failures.append("png-roundtrip: decode failed")
+                }
+            } else {
+                failures.append("png-roundtrip: NSImage decode failed")
+            }
+        } catch {
+            failures.append("png-encode: \(error.localizedDescription)")
+        }
+
+        if failures.isEmpty {
+            NSLog(
+                "Kaiming debug: rounded render test PASS size=\(rendered.width)x\(rendered.height) "
+                    + "png=\(pngWritten ? path : "-")"
+            )
+        } else {
+            NSLog("Kaiming debug: rounded render test FAIL \(failures.joined(separator: "; "))")
+        }
+        NSApp.terminate(nil)
+    }
+
+    /// 四角 alpha 必须为 0，中心必须不透明；返回失败描述。
+    private static func verifyTransparentCorners(_ image: CGImage, label: String) -> [String] {
+        let width = image.width
+        let height = image.height
+        guard width > 2, height > 2 else { return ["\(label): image too small"] }
+
+        var failures: [String] = []
+        let corners = [
+            ("topLeft", 0, 0),
+            ("topRight", width - 1, 0),
+            ("bottomLeft", 0, height - 1),
+            ("bottomRight", width - 1, height - 1),
+        ]
+        for (name, x, y) in corners {
+            guard let alpha = alphaValue(of: image, x: x, y: y) else {
+                failures.append("\(label).\(name): alpha read failed")
+                continue
+            }
+            if alpha != 0 {
+                failures.append("\(label).\(name): alpha=\(alpha) (expected 0)")
+            }
+        }
+        if let centerAlpha = alphaValue(of: image, x: width / 2, y: height / 2),
+           centerAlpha != 255 {
+            failures.append("\(label).center: alpha=\(centerAlpha) (expected 255)")
+        }
+        return failures
+    }
+
+    /// 取样单像素 alpha（x/y 以图像左上角为原点）。
+    private static func alphaValue(of image: CGImage, x: Int, y: Int) -> UInt8? {
+        guard x >= 0, y >= 0, x < image.width, y < image.height,
+              let context = CGContext(
+                  data: nil,
+                  width: 1,
+                  height: 1,
+                  bitsPerComponent: 8,
+                  bytesPerRow: 4,
+                  space: CGColorSpaceCreateDeviceRGB(),
+                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+              ) else { return nil }
+        context.draw(
+            image,
+            in: CGRect(
+                x: CGFloat(-x),
+                y: CGFloat(-(image.height - 1 - y)),
+                width: CGFloat(image.width),
+                height: CGFloat(image.height)
+            )
+        )
+        guard let data = context.data else { return nil }
+        return data.assumingMemoryBound(to: UInt8.self)[3]
+    }
+
+    private static func makeRenderTestBaseImage(width: Int, height: Int) -> CGImage? {
+        guard let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        let bounds = CGRect(x: 0, y: 0, width: width, height: height)
+        context.setFillColor(NSColor.white.cgColor)
+        context.fill(bounds)
+
+        let colors: [NSColor] = [
+            NSColor(srgbRed: 0.16, green: 0.45, blue: 0.86, alpha: 1),
+            NSColor(srgbRed: 0.94, green: 0.58, blue: 0.12, alpha: 1),
+            NSColor(srgbRed: 0.20, green: 0.72, blue: 0.42, alpha: 1),
+        ]
+        for (index, color) in colors.enumerated() {
+            context.setFillColor(color.cgColor)
+            context.fill(
+                CGRect(
+                    x: 380,
+                    y: 200 + CGFloat(index) * 55,
+                    width: 220,
+                    height: 45
+                )
+            )
+        }
+        return context.makeImage()
     }
     #endif
 
