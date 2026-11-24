@@ -30,9 +30,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 剪贴板模块自己负责串行队列与轮询，这里只启动。
         ClipboardManager.shared.startMonitoring()
 
-        // 触发壁纸模块初始化：若上次启用了动态壁纸，由它在 init 中恢复播放。
-        _ = WallpaperManager.shared
-
         Log.app.info("Kaiming launched, screenRecording=\(AppState.shared.screenRecordingGranted, privacy: .public)")
 
         #if DEBUG
@@ -126,8 +123,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let tabIndex = args.firstIndex(of: "--snapshot-tab"), tabIndex + 1 < args.count {
                 switch args[tabIndex + 1] {
                 case "clipboard": AppState.shared.selectedTab = .clipboard
-                case "wallpaper": AppState.shared.selectedTab = .wallpaper
-                case "apps": AppState.shared.selectedTab = .apps
                 default: AppState.shared.selectedTab = .screenshot
                 }
             }

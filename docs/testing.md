@@ -23,7 +23,7 @@ grep -rn "CGDisplayCreateImage" Kaiming --include='*.swift'               # 仅�
 - [ ] `open build/dd/Build/Products/Debug/Kaiming.app` 后进程存活。
 - [ ] 菜单栏出现开明兽（Mono 线稿）图标；Dock 无图标（`LSUIElement`）。
 - [ ] 启动时**不**自动弹出 Markdown 窗口。
-- [ ] 菜单栏图标点击弹出 400×580 面板，四个 Tab（截图/剪贴板/壁纸/应用）可切换。
+- [ ] 菜单栏图标点击弹出 400×580 面板，两个 Tab（截图/剪贴板）可切换。
 - [ ] 点面板右上 Markdown 图标打开独立窗口；关闭后可再次打开。
 - [ ] 设置窗口可打开（面板底部齿轮 / ⌘,）。
 - [ ] 多显示器：鼠标停在副屏时 ⌥⇧M / ⌥⇧C，窗口出现在**副屏中央**（不是主屏）。
@@ -39,7 +39,7 @@ APP=build/dd/Build/Products/Debug/Kaiming.app
 "$APP/Contents/MacOS/Kaiming" --open-settings          # 打开设置窗口
 "$APP/Contents/MacOS/Kaiming" --open-clipboard         # 打开剪贴板快捷选择窗口
 "$APP/Contents/MacOS/Kaiming" --open-folder /abs/path  # 模拟 CLI 打开目录树
-"$APP/Contents/MacOS/Kaiming" --snapshot-panel /tmp/panel.png [--snapshot-tab clipboard|wallpaper|apps] [--snapshot-fake-capture] [--snapshot-clipboard-scope live|favorites]
+"$APP/Contents/MacOS/Kaiming" --snapshot-panel /tmp/panel.png [--snapshot-tab clipboard] [--snapshot-fake-capture] [--snapshot-clipboard-scope live|favorites]
 # --snapshot-fake-capture 用合成图片填充“刚截取的画面”快捷条，便于无 TCC 权限时验收
 # --snapshot-clipboard-scope 让剪贴板页直接渲染「收藏」或「实时」分区
 "$APP/Contents/MacOS/Kaiming" --snapshot-clipboard-picker /tmp/picker.png [--snapshot-clipboard-scope live|favorites]
@@ -108,7 +108,7 @@ log show --info --debug --last 5m --predicate 'subsystem == "com.kaiming.app"' -
 - [ ] 设置「自动保存到文件夹」开启后，文件出现在所选目录。
 - [ ] 每次截图都在 `~/Library/Application Support/Kaiming/Captures/` 留档；超过 30 张后最旧被清理。
 - [ ] 截图声音开关生效；面板显示最近截图缩略图与「刚截取的画面」快捷条。
-- [ ] 快捷条：复制到剪贴板、保存副本到截图文件夹、直接设为壁纸、收起；四个动作都有成功/失败提示。
+- [ ] 快捷条：复制到剪贴板、保存副本到截图文件夹、收起；三个动作都有成功/失败提示。
 - [ ] 连续快速触发不会叠加多套覆盖层。
 
 ### 成品窗口头部（默认开启）
@@ -141,21 +141,7 @@ log show --info --debug --last 5m --predicate 'subsystem == "com.kaiming.app"' -
 - [ ] 在面板点复制不会产生重复历史（自身写入被基线跳过）。
 - [ ] 并发压测：快速 pbcopy 循环时无崩溃（串行队列生效）。
 
-## 5. 壁纸
-
-- [ ] 面板列出所有显示器、主屏标记正确。
-- [ ] 从剪贴板设置壁纸：桌面立即变化；文件出现在 `Application Support/Kaiming/Wallpapers/`。
-- [ ] 壁纸页只有一个「选择壁纸…」入口，不再有「图片/视频」分段控件或两个独立按钮。
-- [ ] 同一入口选择图片 → 设为静态壁纸；选择视频（MP4/MOV/M4V）→ 设为动态壁纸；按文件类型自动路由。
-- [ ] 选择不支持的文件 → 面板提示「不支持的文件类型」，不写入文件、不改变壁纸。
-- [ ] 从图片文件设置：源文件删除后壁纸仍保持（已复制持久化）。
-- [ ] 动态壁纸播放中再选择图片：对应屏幕停止动态壁纸并恢复静态壁纸。
-- [ ] 壁纸页不展示「最近截图」；来源只有剪贴板（图片）/统一文件入口。
-- [ ] 多显示器：只勾选副屏时只改副屏。
-- [ ] 退出并重启应用、再重启 Mac 后壁纸仍保持。
-- [ ] 无剪贴板图片/坏图片时给出错误提示，不崩溃。
-
-## 6. Markdown
+## 5. Markdown
 
 - [ ] 从面板打开 Markdown 窗口，欢迎文档正常渲染（标题、列表、代码块、表格、公式）。
 - [ ] 输入 `**粗体**`、`# 标题` 等，光标离开后实时渲染；光标进入元素显示源码。
@@ -189,7 +175,7 @@ log show --info --debug --last 5m --predicate 'subsystem == "com.kaiming.app"' -
 - [ ] 渲染预览中导出 PDF：A4、分页不截断正文行、含图表与代码高亮。
 - [ ] 渲染预览只读，切回编辑不丢未保存内容。
 
-## 7. 快捷键与设置
+## 6. 快捷键与设置
 
 - [ ] 默认 ⌥⇧S / W / F / C / M 全部生效（应用在后台时）。
 - [ ] 设置 → 快捷键：每行显示当前组合键，点击后变成「按下组合键…」。
@@ -207,27 +193,26 @@ log show --info --debug --last 5m --predicate 'subsystem == "com.kaiming.app"' -
 - [ ] 「登录时自动启动」在签名构建上可注册/注销；失败时显示系统错误。
 - [ ] 「恢复默认设置」清空自定义值并重新注册快捷键。
 
-## 8. 分发
+## 7. 分发
 
 - [ ] `./Scripts/archive.sh` 生成 `.xcarchive`、`build/export/Kaiming.app`、DMG。
 - [ ] Developer ID 构建：`codesign --verify --deep --strict` 通过。
 - [ ] 公证：`./Scripts/notarize.sh` 成功，`spctl --assess` 为 accepted。
 - [ ] 干净机器首次打开无「无法验证开发者」提示。
 
-## 9. 交付标准对照
+## 8. 交付标准对照
 
 | 规格 | 验收点 |
 |---|---|
 | 1 菜单栏常驻、无 Dock | 1 启动 |
 | 2 三种截图 + 标注 + 自动进剪贴板 | 3 全部 |
 | 3 剪贴板类型/历史/复制/清除 | 4 全部 |
-| 4 壁纸多源/多屏/重启保持 | 5 全部 |
-| 5 Markdown 独立窗口/载入/编辑/预览/保存 | 6 全部 |
-| 6 同一工程共享权限与设置 | 工程结构 + 1/7 |
-| 7 首次权限引导 | 2 全部 |
-| 8 可签名公证 | 8 全部 |
+| 4 Markdown 独立窗口/载入/编辑/预览/保存 | 5 全部 |
+| 5 同一工程共享权限与设置 | 工程结构 + 1/6 |
+| 6 首次权限引导 | 2 全部 |
+| 7 可签名公证 | 7 全部 |
 
-## 10. v1.1 新功能验收
+## 9. v1.1 新功能验收
 
 ### 剪贴板快捷选择
 - [ ] 剪贴板选择快捷键（默认 ⌥⇧C，自定义后跟随）在后台唤起 520×460 选择窗口，搜索框自动聚焦。
@@ -248,19 +233,6 @@ log show --info --debug --last 5m --predicate 'subsystem == "com.kaiming.app"' -
 - [ ] 脏 Markdown 下预览其他文件不会丢失未保存内容；切回/载入 .md 仍有确认。
 - [ ] 脏文档时仅切目录不弹确认；载入文件前弹确认，取消后内容保留。
 - [ ] `./Scripts/install-cli.sh` 后 `kaiming ./docs` 冷启动/热启动均能打开。
-
-### 应用中心
-- [ ] 「应用」tab 显示已安装应用图标网格、数量、搜索；点击可启动；右键可在 Finder 显示。
-- [ ] 「打开目录…」跳转 Markdown 目录树；最近目录可点击复用并可清除。
-- [ ] 88+ 应用时滚动流畅；刷新不卡主线程。
-
-### 视频动态壁纸
-- [ ] 壁纸页切换「视频」，点「选择视频…」后 NSOpenPanel 保持打开，popover 关闭不会取消；选中 MP4/MOV 后显示首帧、时长、分辨率。
-- [ ] 图片/轮换文件夹选择同样不会被 popover 关闭取消。
-- [ ] 启用后桌面层窗口出现（level = desktopWindow+1，覆盖 screen.frame），循环静音播放；桌面图标仍在视频上方。
-- [ ] 菜单栏背景使用视频首帧 poster 匹配（系统限制：菜单栏不能播放视频）；停止后恢复原系统壁纸。
-- [ ] 停止后窗口消失；退出 App 后停止；重启 App 恢复上次启用状态。
-- [ ] 应用静态壁纸会停止对应屏动态壁纸；无系统「视频壁纸」API 的说明可见。
 
 ### 截图圆角 / 长截图
 - [ ] 圆角 0–48pt 可调，预览与导出 PNG 一致，圆角外透明。

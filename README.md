@@ -3,15 +3,13 @@
 > 《山海经·海内西经》："开明兽……目视四方。" 开明兽守护昆仑九门，明察万物。
 > 取"截取屏幕所见、辨识剪贴板内容、开启 Markdown 文档"之意。
 
-Kaiming 是一个 macOS 菜单栏常驻的四合一原生效率工具，用同一个入口整合：
+Kaiming 是一个 macOS 菜单栏常驻的三合一原生效率工具，用同一个入口整合：
 
 | 模块 | 能力 |
 |---|---|
-| 截图 | 区域 / 窗口 / 全屏三种模式，按屏幕原生像素（4K/Retina）采集；AppKit 覆盖层框选与标注（画笔手写 / 矩形 / 箭头 / 文字 / 马赛克）；支持圆角与长截图（默认手动滚动、保留选区边框，可切换自动滚动）；完成后 PNG 自动进剪贴板，并可在面板内一键复制 / 保存 / 设为壁纸；成品可选 macOS 标准窗口头部（红黄绿三个圆点，默认开启、设置可关闭）；可配置截图时是否隐藏 Kaiming 自己的窗口（默认**不隐藏**，Markdown 内容可直接截进图里） |
+| 截图 | 区域 / 窗口 / 全屏三种模式，按屏幕原生像素（4K/Retina）采集；AppKit 覆盖层框选与标注（画笔手写 / 矩形 / 箭头 / 文字 / 马赛克）；支持圆角与长截图（默认手动滚动、保留选区边框，可切换自动滚动）；完成后 PNG 自动进剪贴板，并可在面板内一键复制 / 保存；成品可选 macOS 标准窗口头部（红黄绿三个圆点，默认开启、设置可关闭）；可配置截图时是否隐藏 Kaiming 自己的窗口（默认**不隐藏**，Markdown 内容可直接截进图里） |
 | 剪贴板 | 历史记录、类型识别、收藏与实时双 tab（收藏项永久保留、可随时移除，不占实时条数上限）、一键复制 / 清除；默认 ⌥⇧C 打开快捷选择窗口，↑/↓ 选中、Enter 复制（快捷键可在设置中自定义） |
-| 壁纸 | 从剪贴板或统一文件入口设置壁纸：图片与视频共用「选择壁纸…」，按文件类型自动静态 / 动态应用；多显示器独立设置，重启后保持；不把截图历史作为壁纸来源 |
-| Markdown | 独立 SwiftUI 窗口，Typora 式实时渲染（TextKit 2，GitHub 浅/深色内容主题）；项目文件夹预览与「最近项目」下拉、本地/远程图片、内部文件链接（目录联动）、纯标题大纲导航（点击可滚动定位编辑器/渲染预览）、非 Markdown 文件按类型语法高亮预览；整篇渲染预览改用 WKWebView（GitHub Markdown 样式、HTML 块、Mermaid 图表、跟随系统深浅色），支持页宽（默认/较宽/全宽）、⌘+滚轮缩放字号、导出 A4 PDF；编辑与渲染预览均支持 ⌘F 内嵌查找（正则 / 区分大小写，全部匹配高亮），编辑器支持替换当前 / 全部替换（正则替换支持 `$1` 捕获组）；渲染预览中的内部链接留在预览里跳转，不再弹出外部应用窗口；图标悬停提示；编辑 / 保存；支持 `kaiming ./docs` 打开目录 |
-| 应用中心 | 菜单栏「应用」页：已安装应用启动器、最近目录、打开目录；配合 CLI 直接进入 Markdown 文件树 |
+| Markdown | 独立 SwiftUI 窗口，Typora 式实时渲染（TextKit 2，GitHub 浅/深色内容主题）；项目文件夹预览与「最近项目」下拉、本地/远程图片、内部文件链接（目录联动）、纯标题大纲导航（点击可滚动定位编辑器/渲染预览）、非 Markdown 文件按类型语法高亮预览；整篇渲染预览改用 WKWebView（GitHub Markdown 样式、HTML 块、Mermaid 图表、跟随系统深浅色），支持页宽（默认/较宽/全宽）、⌘+滚轮缩放字号、导出 A4 PDF；编辑与渲染预览均支持 ⌘F 内嵌查找（正则 / 区分大小写，全部匹配高亮），编辑器支持替换当前 / 全部替换（正则替换支持 `$1` 捕获组）；渲染预览中的内部链接留在预览里跳转，不再弹出外部应用窗口；图标悬停提示；编辑 / 保存；支持 `kaiming ./docs` 从终端打开目录 |
 
 纯 Swift 6 + Apple 原生框架。编辑器始终是原生 TextKit 2；只有「整篇渲染预览 / PDF 导出」
 使用系统 WKWebView（离线、无外链资源），不引入跨平台抽象。
@@ -28,25 +26,17 @@ Kaiming 是一个 macOS 菜单栏常驻的四合一原生效率工具，用同�
 |---|---|
 | ![Markdown 目录树](docs/screenshots/markdown-folder-tree.png) | ![剪贴板快捷选择](docs/screenshots/clipboard-picker.png) |
 
-| 应用中心 | 视频动态壁纸 |
+| 剪贴板历史 | 截图圆角 + 标注 |
 |---|---|
-| ![应用中心](docs/screenshots/app-center.png) | ![视频动态壁纸](docs/screenshots/panel-wallpaper-video.png) |
+| ![剪贴板](docs/screenshots/panel-clipboard.png) | ![圆角选区](docs/screenshots/screenshot-rounded-overlay.png) |
 
-| 剪贴板历史 | 多显示器壁纸 / 设置 |
+| 长截图（手动优先） | 项目文件夹预览 + 文本只读预览 |
 |---|---|
-| ![剪贴板](docs/screenshots/panel-clipboard.png) | ![壁纸](docs/screenshots/panel-wallpaper.png) |
+| ![长截图](docs/screenshots/long-capture-manual-hud.png) | ![项目预览](docs/screenshots/markdown-project-preview.png) |
 
-| 截图圆角 + 标注 | 长截图（手动优先） |
+| 内容导航 + HTML 渲染预览 | 内部链接打开后目录联动 |
 |---|---|
-| ![圆角选区](docs/screenshots/screenshot-rounded-overlay.png) | ![长截图](docs/screenshots/long-capture-manual-hud.png) |
-
-| 项目文件夹预览 + 文本只读预览 | 内容导航 + HTML 渲染预览 |
-|---|---|
-| ![项目预览](docs/screenshots/markdown-project-preview.png) | ![HTML 渲染](docs/screenshots/markdown-html-preview.png) |
-
-| 内部链接打开后目录联动 |
-|---|
-| ![目录联动](docs/screenshots/markdown-link-reveal.png) |
+| ![HTML 渲染](docs/screenshots/markdown-html-preview.png) | ![目录联动](docs/screenshots/markdown-link-reveal.png) |
 
 | 偏好设置 | 自定义快捷键（录制后保存生效） |
 |---|---|
@@ -60,7 +50,6 @@ Kaiming 是一个 macOS 菜单栏常驻的四合一原生效率工具，用同�
 | 截图核心 | ScreenCaptureKit：`SCShareableContent` → `SCContentFilter` → `SCStreamConfiguration` → `SCScreenshotManager.captureImage`（macOS 14+） |
 | 截图覆盖层 | AppKit：每屏一个无边框 `.screenSaver` 层级 `NSWindow`，冻结截图 + 8 手柄选区 + CG 标注 |
 | 剪贴板 | AppKit `NSPasteboard`，专用串行 `DispatchQueue` + `changeCount` 轮询 |
-| 壁纸 | AppKit `NSWorkspace.setDesktopImageURL`，文件持久化到 Application Support |
 | Markdown | TextKit 2 原生编辑器（`swift-markdown-engine 0.15.0` 内嵌，见 [docs/vendor.md](docs/vendor.md)） |
 | 全局快捷键 | Carbon `RegisterEventHotKey`；默认 ⌥⇧S / W / F / C / M，可在设置 → 快捷键点击录制、保存后生效 |
 | 偏好设置 | 独立 `Window` scene + `UserDefaults`（`SettingsStore` 单一来源） |
@@ -134,13 +123,12 @@ kaiming ./docs       # 打开 docs 目录
 kaiming ./README.md  # 打开文件所在目录并载入文件
 ```
 
-也可以在菜单栏「应用 → 打开目录…」选择目录，效果相同。
+也可以在 Markdown 窗口的「打开文件夹…」选择目录，效果相同。
 
 ## 数据目录
 
 | 内容 | 路径 |
 |---|---|
-| 壁纸持久副本 | `~/Library/Application Support/Kaiming/Wallpapers/` |
 | 截图历史（最近 30 张） | `~/Library/Application Support/Kaiming/Captures/` |
 | 剪贴板图片与历史元数据 | `~/Library/Application Support/Kaiming/Clipboard/` |
 | 截图默认保存目录 | `~/Pictures/Kaiming/`（可在设置中修改） |
@@ -159,7 +147,6 @@ Kaiming/
   Settings/                 # 偏好设置
   Screenshot/               # ScreenCaptureKit 采集 + AppKit 覆盖层 + 标注
   Clipboard/                # 串行队列监控 + 历史
-  Wallpaper/                # 多显示器壁纸
   Markdown/                 # 独立窗口 + 引擎适配
   Resources/                # 图标、highlight.js、mathFonts.bundle
 MarkdownKit/                # 内嵌第三方源码（只读，独立 framework）
@@ -170,10 +157,10 @@ docs/                       # 架构、权限、分发、测试、第三方说�
 ## 架构与约束
 
 - 菜单栏是唯一入口；Markdown 用独立 `Window` scene，不嵌入菜单栏面板或截图覆盖窗口。
-- 模块之间**只通过 `NSPasteboard` 交换数据**；「最近截图」通过 `Application Support/Kaiming/Captures`
-  文件目录约定共享，不产生模块类型依赖。
-- 所有剪贴板读写走专用串行队列；壁纸文件不指向临时路径；权限失败必须有可操作提示。
-- UI 框架策略：SwiftUI 为主；AppKit 用于截图覆盖层、Carbon 全局快捷键、剪贴板/壁纸/图片处理所需的系统 API（NSPasteboard、NSWorkspace、NSImage），以及 Markdown 整篇渲染预览/PDF 导出使用的 WKWebView（WebKit 是系统框架，仅此一处）。
+- 模块之间**只通过 `NSPasteboard` 交换数据**；截图留档写入 `Application Support/Kaiming/Captures`
+  并由截图模块自行维护（最近 30 张），不产生模块类型依赖。
+- 所有剪贴板读写走专用串行队列；截图历史与剪贴板缓存不指向临时路径；权限失败必须有可操作提示。
+- UI 框架策略：SwiftUI 为主；AppKit 用于截图覆盖层、Carbon 全局快捷键、剪贴板与图片处理所需的系统 API（NSPasteboard、NSImage），以及 Markdown 整篇渲染预览/PDF 导出使用的 WKWebView（WebKit 是系统框架，仅此一处）。
 
 详见 [docs/architecture.md](docs/architecture.md)。
 
@@ -213,10 +200,10 @@ export APP_NOTARY_PASSWORD=xxxx-xxxx-xxxx-xxxx
 
 未签名/未公证的构建仅适合本机开发。Developer ID + 公证流程见 [docs/distribution.md](docs/distribution.md)。
 
-> App Sandbox 默认关闭：Developer ID 分发不强制沙盒，而壁纸持久文件需要让系统壁纸服务可读。
+> App Sandbox 默认关闭：Developer ID 分发不强制沙盒。
 > `Config/Kaiming.entitlements` 是一份沙盒模板，**当前未接入 build settings**；启用沙盒需要在
-> target 上显式设置 `CODE_SIGN_ENTITLEMENTS = Config/Kaiming.entitlements`，并把壁纸目录改为
-> 用户通过 `NSOpenPanel` 选择的目录 + security-scoped bookmark（详见分发文档）。
+> target 上显式设置 `CODE_SIGN_ENTITLEMENTS = Config/Kaiming.entitlements`，并给用户选择的目录
+> 加上 security-scoped bookmark（详见分发文档）。
 
 ## 测试
 
@@ -226,7 +213,7 @@ export APP_NOTARY_PASSWORD=xxxx-xxxx-xxxx-xxxx
 ./Scripts/build.sh
 ```
 
-手工验收清单（截图/剪贴板/壁纸/Markdown/权限/重启保持）见 [docs/testing.md](docs/testing.md)。
+手工验收清单（截图/剪贴板/Markdown/权限/重启保持）见 [docs/testing.md](docs/testing.md)。
 
 ## 第三方组件
 
@@ -256,13 +243,7 @@ export APP_NOTARY_PASSWORD=xxxx-xxxx-xxxx-xxxx
   ⌘, 仍可用；这是对规格中「Settings scene」的一处有据可查的工程偏离。
 - 截图按屏幕原生像素采集（本机 4K：3840×2160）；4K 长截图在高上限下内存占用较高。
 - Markdown 的 HTML 块在「渲染预览」中由 **WKWebView** 真实渲染（编辑器内仍显示源码，含 HTML 块时出现一键预览提示条）；预览会先清洗 `<script>`/`<iframe>` 与 `on*` 事件，HTML 自带样式可生效。Mermaid 图固定使用深色画布（参考 Crescent 架构图风格），不随页面浅色主题重绘。
-- 菜单栏是系统材质，视频壁纸启用时用视频首帧 poster 作为系统壁纸来匹配菜单栏背景（静态、不随视频变化）；停止动态壁纸会恢复原壁纸。
-- 视频壁纸是**桌面层窗口**实现（macOS 没有公开 API 把视频设为系统壁纸）：
-  Kaiming 必须保持运行，退出即停止；桌面图标保持在视频上层。
 - 长截图默认进入**手动滚动**（保留选区边框，实时页面自行滚动）；点 HUD 的「自动滚动」才需要辅助功能（Accessibility）权限，未授权时保持手动。
-- 壁纸使用单一「选择壁纸…」入口（AppKit NSOpenPanel，同时接受图片与视频），按文件类型自动应用；
-  菜单栏 popover 关闭不会取消选择。
-- 应用中心只扫描 `/Applications`、`/System/Applications`、`~/Applications` 的顶层与二级 `.app`，不索引 Spotlight 全盘应用。
 - 未实现云端同步/多设备历史；所有数据仅本机。
 
 Copyright © 2026 Kaiming.

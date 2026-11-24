@@ -697,7 +697,6 @@ private struct AboutSettingsPane: View {
             VStack(alignment: .leading, spacing: 8) {
                 aboutRow("crop", "截图：ScreenCaptureKit + AppKit 全屏覆盖层")
                 aboutRow("doc.on.clipboard", "剪贴板：NSPasteboard 串行队列 + 历史记录")
-                aboutRow("photo", "壁纸：NSWorkspace，多显示器，持久化到 Application Support")
                 aboutRow("doc.richtext", "Markdown：TextKit 2 原生编辑器 + WebView 渲染预览")
             }
             .padding(.horizontal, 40)

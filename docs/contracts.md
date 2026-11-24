@@ -29,7 +29,7 @@ xcodebuild -project Kaiming.xcodeproj -scheme Kaiming -configuration Debug \
 |---|---|
 | Lead | `Kaiming.xcodeproj/`、`Config/`、`Kaiming/App/`、`Kaiming/Shared/`、`Kaiming/MenuBar/`、`Kaiming/Settings/`、`Kaiming/Resources/`、`MarkdownKit/`、`docs/`、`Scripts/`、`README.md` |
 | Screenshot | `Kaiming/Screenshot/**` |
-| Clipboard + Wallpaper | `Kaiming/Clipboard/**`、`Kaiming/Wallpaper/**` |
+| Clipboard | `Kaiming/Clipboard/**` |
 | Markdown | `Kaiming/Markdown/**` |
 
 只在自己作用域内新增/修改文件。不要碰别人的目录，不要改 `Info.plist`、`SettingsStore`、`MenuBarPanel`、
@@ -42,7 +42,7 @@ xcodebuild -project Kaiming.xcodeproj -scheme Kaiming -configuration Debug \
    （系统 WKWebView，内容自包含、不联网；不引入第三方 WebView 或跨平台抽象）。
 3. 截图必须用 `SCScreenshotManager.captureImage`（ScreenCaptureKit，macOS 14+）；不得用 `CGWindowListCreateImage` 等旧截图 API，不做 macOS 26 专属 API。唯一例外：SCK 的 `SCShareableContent.displays` 里根本没有某块显示器（部分扩展坞 / 虚拟显示器）时，允许用 `CGDisplayCreateImage(displayID)` 逐屏兜底，必须记录日志并在覆盖层里提示。
 4. 所有 `NSPasteboard` 读写串行化到专用 `DispatchQueue`，禁止并发。
-5. 壁纸/截图历史文件必须持久化到 `AppPaths` 下，不得指向临时目录。
+5. 截图历史 / 剪贴板缓存文件必须持久化到 `AppPaths` 下，不得指向临时目录。
 6. 模块间只通过 `NSPasteboard.general` 交换数据，**不得直接引用其他模块的类型**（`AppState` / `AppRouter` / `SettingsStore` / `ScreenCapturePermission` / `Log` / `AppPaths` / `CaptureMode` 是共享基础，允许使用）。
 7. 权限未授权时必须给出明确、可操作的提示，禁止静默失败。
 8. 所有面向用户的文案用中文；日志用 `Log.*`（`os.Logger`，字符串插值加 `privacy: .public` 才会出现在 log stream 中）。
@@ -58,8 +58,7 @@ enum ScreenshotFormat: String, CaseIterable, Identifiable, Sendable { case png, 
 
 enum AppPaths {
     static var applicationSupport: URL   // ~/Library/Application Support/Kaiming
-    static var wallpapers: URL           // .../Wallpapers
-    static var captures: URL             // .../Captures   ← 截图历史目录（双方约定）
+    static var captures: URL             // .../Captures   ← 截图历史目录
     static var clipboardStore: URL       // .../Clipboard
     static var defaultScreenshots: URL   // ~/Pictures/Kaiming
     static func ensureDirectory(_ url: URL) throws -> URL
@@ -85,7 +84,7 @@ enum ScreenCapturePermission {
 
 @MainActor final class AppState: ObservableObject {
     static let shared
-    var selectedTab: PanelTab            // .screenshot / .clipboard / .wallpaper
+    var selectedTab: PanelTab            // .screenshot / .clipboard
     private(set) var screenRecordingGranted: Bool
     private(set) var lastCapturedImage: NSImage?
     private(set) var lastCaptureDate: Date?
@@ -176,34 +175,6 @@ struct ClipboardPanelView: View              // init(initialScope: ClipboardScop
 `AppDelegate` 启动时调用 `startMonitoring()`、退出时 `stopMonitoring()`；
 `SettingsView` 的「清空实时历史（保留收藏）」调用 `clearHistory()`。这些调用点已存在，签名必须保持。
 
-### Wallpaper（`Kaiming/Wallpaper/`）
-
-```swift
-struct ScreenInfo: Identifiable, Equatable {
-    let id: String                  // NSScreen 的稳定标识（如 "display-<CGDirectDisplayID>"）
-    var name: String
-    var isMain: Bool
-    var currentWallpaper: URL?
-    var pixelSize: CGSize
-}
-
-@MainActor final class WallpaperManager: ObservableObject {
-    static let shared: WallpaperManager
-    private(set) var screens: [ScreenInfo]
-    func refreshScreens()
-    func setWallpaper(image: NSImage, screenIDs: Set<String>)
-    func setWallpaper(fileURL: URL, screenIDs: Set<String>)
-    func setFromPasteboard(screenIDs: Set<String>)
-    // v1.7 统一入口：图片 / 视频按类型自动路由，见第 22 节
-    func applyWallpaper(from url: URL, screenIDs: Set<String>)
-}
-struct WallpaperPanelView: View
-```
-
-文件选择统一走 `WallpaperFilePicker.shared.chooseWallpaper`（同时接受图片与视频）。
-
-失败（无权限、图片不可读等）用 `AppState.shared.flash("…", kind: .error)` 明确提示，不要静默。
-
 ### Markdown（`Kaiming/Markdown/`）
 
 ```swift
@@ -239,10 +210,9 @@ struct MarkdownRenderedPreviewView: View {
 }
 ```
 
-## 6. 截图 ↔ 壁纸的「截图历史」约定
+## 6. 截图历史约定
 
 - 截图模块每次成功截取后，**除剪贴板外**，把 PNG 写入 `AppPaths.captures/`（文件名含时间戳），并只保留最近 30 张。
-- 壁纸模块通过扫描 `AppPaths.captures/` 展示「最近截图」作为数据源（文件系统约定，不 import 截图类型）。
 - 截图模块调用 `AppState.shared.recordCapture(image)` 更新面板预览。
 
 ## 7. 完成标准（各模块）
@@ -274,7 +244,7 @@ enum AccessibilityPermission {
 }
 ```
 
-- `MarkdownOpenRequest` 是应用中心 / CLI / URL scheme 打开目录的唯一通道；
+- `MarkdownOpenRequest` 是 CLI / URL scheme 打开目录的唯一通道；
   Markdown 模块用 `@ObservedObject` 观察并在 `onChange`/`onAppear` 消费。
 - 辅助功能权限仅用于长截图的自动滚动。
 
@@ -301,19 +271,6 @@ struct ClipboardPickerSearchField: NSViewRepresentable  // NSTextField + delegat
 - 外部请求 `MarkdownOpenRequest`：打开目录树；若带 `file` 则同时载入该文件。
 - 当前文档有未保存修改时，载入外部文件前必须确认；仅切换目录树不算破坏文档。
 
-## 13. 壁纸视频（动态壁纸）
-
-- 支持导入 `.mp4` / `.mov` 等视频；复制持久化到 `AppPaths.wallpapers`（UUID 文件名）。
-- macOS **没有公开 API** 把视频设为系统壁纸；实现为桌面层窗口：
-  `NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopWindow)) + 1)`，
-  `collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]`、
-  `ignoresMouseEvents = true`、无阴影，AVQueuePlayer + AVPlayerLooper 循环、静音。
-- 多显示器各一个窗口/播放器；关闭「动态壁纸」或退出 App 即停止；桌面图标应保持在上层。
-- 选择静态壁纸时，应停止对应屏幕的动态壁纸。
-- 在 `WallpaperManager.init` 中恢复上次启用的动态壁纸（App 启动时 `AppDelegate`
-  已 `_ = WallpaperManager.shared` 触发；恢复需延迟到窗口可用）。
-- 错误必须 `AppState.flash(.error)`；视频不可播放时拒绝并提示。
-
 ## 14. 截图：圆角、画笔与长截图
 
 - 圆角：选区/标注工具栏提供 0–48pt 圆角调整，预览与最终 PNG 都应用圆角遮罩（圆角外透明）。
@@ -339,14 +296,11 @@ struct ClipboardPickerSearchField: NSViewRepresentable  // NSTextField + delegat
   - 不允许静默失败；权限/未检测到滚动/高度超限都要有可操作提示。
 - 长截图与圆角可组合；普通截图行为不得回归。
 
-## 15. 应用中心与 CLI（Lead 负责）
+## 15. CLI（终端打开目录）
 
-- 菜单栏面板新增第 4 个 tab「应用」：已安装应用网格（`/Applications`、`/System/Applications`、
-  `~/Applications`，可搜索、点击启动）+ 最近文件夹 + 「打开目录…」。
-- 打开目录会设置 `MarkdownOpenRequest.shared` 并 `AppRouter.openMarkdown()`。
 - CLI：`Scripts/kaiming ./docs` 经 `kaiming://open-folder?path=<base64url>` 唤起
   Markdown 目录树；URL scheme 已在 `Config/Info.plist` 注册。
-- 该 tab 由 Lead 实现，不要修改。
+- 打开目录会设置 `MarkdownOpenRequest.shared` 并 `AppRouter.openMarkdown()`。
 
 ## 16. 测试钩子（DEBUG）
 
@@ -370,9 +324,6 @@ Kaiming --capture-test full [--capture-test-copy]
 - 全屏/区域冻结图/长截图逐帧/窗口截图共用像素尺寸策略；标注拍平保持底图像素尺寸。
 - 开启「成品带窗口头部」后，成品宽度不变、高度 = 原生高度 + 头部高度（28pt × 像素密度）；
   关闭后与改动前完全一致。`--capture-test` 默认不叠加头部，保持原生像素尺寸校验。
-
-## 18. 壁纸来源
-- 壁纸 UI 不再展示/扫描 `AppPaths.captures`；来源仅剪贴板图片、用户选择图片、视频、轮换文件夹。
 
 ## 19. Markdown 富内容
 - `MarkdownImageProvider`：本地相对/绝对/file URL 与 http(s) 图片。
@@ -413,21 +364,6 @@ Kaiming --capture-test full [--capture-test-copy]
 - `ClipboardPanelView` 的公开形态保持无参 `View`；`ClipboardManager.clearHistory()` 签名不变。
 
 # v1.7 扩展契约
-
-## 22. 壁纸统一入口（图片 / 视频不再区分）
-
-- 壁纸页只有一个文件入口「选择壁纸…」：`WallpaperFilePicker.chooseWallpaper(completion:)` 用
-  `wallpaperContentTypes`（`image` + `movie` / `mpeg4Movie` / `quickTimeMovie` / `video`）打开同一个
-  AppKit `NSOpenPanel`；面板内**不得**再出现「图片 / 视频」分段控件或两个独立的选择按钮。
-- 选中文件后统一交给 `WallpaperManager.applyWallpaper(from:screenIDs:)` 路由：
-  - 视频（`.movie` / `.video`，或扩展名 mp4 / mov / m4v）→ `startDynamicWallpaper(fileURL:screenIDs:)`；
-  - 图片（`.image`）→ `setWallpaper(fileURL:screenIDs:)`；
-  - 其他 → `AppState.flash("不支持的文件类型…", kind: .error)`，不写入任何文件。
-- 媒体类型判定集中在 `Wallpaper/WallpaperMedia.swift` 的 `WallpaperContentKind.kind(for:)`
-  （优先 `UTType`，扩展名兜底）。剪贴板来源仍只读图片；若剪贴板里是视频文件 URL，也按同一路由设为动态壁纸。
-- 已冻结入口 `setWallpaper(fileURL:screenIDs:)`、`startDynamicWallpaper(fileURL:screenIDs:)`、
-  `WallpaperPanelView` 无参形态、`WallpaperFilePicker.chooseImage/chooseVideo` 签名保持不变（可保留为内部兼容）。
-- 动态壁纸卡片只在 `manager.isDynamicWallpaperActive` 为真时显示，不再依赖任何「媒体类型」UI 状态。
 
 ## 23. 权限统一入口
 
@@ -547,3 +483,19 @@ struct PermissionStatus: Equatable, Sendable { var isGranted: Bool; var checkedA
   不做整屏滑动切到窗口原来所在的桌面。`.canJoinAllSpaces` 的窗口（快照 / 覆盖层）不登记、不改行为。
 - 调试：定位时打印 `Kaiming debug: placed <scene> window on screen <屏名> frame=<frame>`，
   多显示器 / 多 Space 排查用它确认目标屏与 frame。
+
+---
+
+# v2.0 功能收敛
+
+## 28. 移除「应用」与「壁纸」功能
+
+- 菜单栏面板只保留「截图 / 剪贴板」两个 tab；`AppState.PanelTab` 删除 `.apps`、`.wallpaper`。
+- 删除 `Kaiming/AppCenter/**`、`Kaiming/Wallpaper/**` 两个模块；`AppPaths.wallpapers`、
+  `Log.wallpaper` 同步移除。
+- 截图后的快捷条只保留「保存副本 / 复制到剪贴板 / 收起」，不再提供「设为壁纸」。
+- App 启动不再初始化壁纸模块；截图仍排除系统壁纸代理窗口（`com.apple.wallpaper.agent`），
+  与已删除的功能模块无关。
+- 因模块删除而作废的旧条目：第 5 节 Wallpaper 公开入口、第 6 节壁纸消费方、第 13 / 18 / 22 节。
+- CLI 与 Markdown 打开通道保留（第 15 节）。
+- 调试快照：`--snapshot-tab` 只接受 `clipboard`，其余值回退到截图页。

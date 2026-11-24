@@ -12,7 +12,7 @@ struct CaptureFile: Identifiable, Equatable, Sendable {
 
 /// `AppPaths.captures` 的读写、命名与保留策略。
 ///
-/// 截图历史固定以 PNG 保存（与壁纸模块的文件系统约定），自动保存目录才跟随
+/// 截图历史固定以 PNG 保存，自动保存目录才跟随
 /// `SettingsStore.screenshotFormat`。命名与淘汰逻辑拆成纯函数，便于单独验证。
 enum CaptureHistory {
     static let maxRetained = 30

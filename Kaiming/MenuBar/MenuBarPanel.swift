@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 菜单栏弹出面板：四个功能的统一入口。
+/// 菜单栏弹出面板：截图、剪贴板与 Markdown 的统一入口。
 struct MenuBarPanel: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var settings: SettingsStore
@@ -130,10 +130,6 @@ struct MenuBarPanel: View {
                     }
                 case .clipboard:
                     ClipboardPanelView(initialScope: clipboardScope)
-                case .wallpaper:
-                    WallpaperPanelView()
-                case .apps:
-                    AppCenterPanelView()
                 }
             }
             .padding(14)
@@ -169,13 +165,6 @@ struct MenuBarPanel: View {
             Spacer(minLength: 0)
 
             Button {
-                setCaptureAsWallpaper(image)
-            } label: {
-                Image(systemName: "photo")
-            }
-            .help("直接设为壁纸")
-
-            Button {
                 saveCapture(image)
             } label: {
                 Image(systemName: "square.and.arrow.down")
@@ -205,17 +194,6 @@ struct MenuBarPanel: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(Color.accentColor.opacity(0.08))
         )
-    }
-
-    private func setCaptureAsWallpaper(_ image: NSImage) {
-        let manager = WallpaperManager.shared
-        manager.refreshScreens()
-        let ids = Set(manager.screens.map(\.id))
-        guard !ids.isEmpty else {
-            appState.flash("没有检测到可用显示器。", kind: .error)
-            return
-        }
-        manager.setWallpaper(image: image, screenIDs: ids)
     }
 
     private func saveCapture(_ image: NSImage) {

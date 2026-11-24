@@ -3,7 +3,7 @@ import Combine
 
 /// 外部打开 Markdown 目录/文件的请求通道。
 ///
-/// 来源：应用中心「打开目录…」、CLI `kaiming ./docs`（经 `kaiming://` URL scheme）。
+/// 来源：CLI `kaiming ./docs`（经 `kaiming://` URL scheme）。
 /// 由 `MarkdownWindowView` 消费；不包含 Markdown 模块类型，保持模块边界。
 @MainActor
 final class MarkdownOpenRequest: ObservableObject {

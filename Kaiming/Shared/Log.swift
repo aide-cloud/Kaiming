@@ -8,7 +8,6 @@ enum Log {
     static let app = Logger(subsystem: subsystem, category: "app")
     static let screenshot = Logger(subsystem: subsystem, category: "screenshot")
     static let clipboard = Logger(subsystem: subsystem, category: "clipboard")
-    static let wallpaper = Logger(subsystem: subsystem, category: "wallpaper")
     static let markdown = Logger(subsystem: subsystem, category: "markdown")
     static let hotkey = Logger(subsystem: subsystem, category: "hotkey")
 }

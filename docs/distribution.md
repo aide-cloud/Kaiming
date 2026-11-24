@@ -19,17 +19,17 @@
 默认 **关闭 App Sandbox**（`ENABLE_APP_SANDBOX = NO`）：
 
 - Developer ID 分发并不要求沙盒；
-- 壁纸设置需要系统壁纸服务读取持久文件，沙盒容器路径在部分系统版本上会导致
-  `setDesktopImageURL` 失败；
-- 截图 TCC 权限与沙盒无关。
+- 截图 TCC 权限与沙盒无关；
+- 代码按非沙盒路径（`~/Library/Application Support/Kaiming`、`~/Pictures/Kaiming`）验证，
+  开启沙盒需要重新确认这些目录的访问方式。
 
 `Config/Kaiming.entitlements` 是一份沙盒模板（app-sandbox + user-selected + bookmark），
 **当前未接入 build settings**（默认 `ENABLE_APP_SANDBOX = NO`）。上架 Mac App Store 时需要手动：
 
 1. 在 target 设置里为 Release 配置 `CODE_SIGN_ENTITLEMENTS = Config/Kaiming.entitlements`；
-2. 把壁纸持久目录改为用户通过 `NSOpenPanel` 选择的 `~/Pictures` 子目录，并持久化
+2. 截图自动保存目录、Markdown 打开的外部文件都需要用户通过 `NSOpenPanel` 选择，并持久化
    security-scoped bookmark；
-3. 重新验证屏幕录制、壁纸、自动保存目录三条链路（沙盒下容器文件可能不可被壁纸服务读取）。
+3. 重新验证屏幕录制、截图自动保存、Markdown 文件读写三条链路。
 
 未完成以上步骤前，`Kaiming.entitlements` 不会自动生效。
 
@@ -90,7 +90,6 @@ NOTARY_PROFILE=KaimingNotary ./Scripts/notarize.sh
 - [ ] `spctl --assess --type execute` 返回 `accepted`；
 - [ ] 在一台**没有开发环境**的 Mac 上首次打开无安全警告；
 - [ ] 屏幕录制权限引导可用（授权后重启生效）；
-- [ ] 壁纸重启后保持；
 - [ ] Markdown 窗口可打开、编辑、保存；
 - [ ] app 只常驻菜单栏，无 Dock 图标。
 

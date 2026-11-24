@@ -3,7 +3,7 @@ import Foundation
 /// 应用数据目录的统一约定。
 ///
 /// 约定：
-/// - 截图历史 / 剪贴板缓存 / 壁纸都放在 Application Support/Kaiming 下，**不允许**指向临时目录；
+/// - 截图历史 / 剪贴板缓存都放在 Application Support/Kaiming 下，**不允许**指向临时目录；
 /// - 默认截图保存目录为 ~/Pictures/Kaiming，可在设置中修改。
 enum AppPaths {
     static var applicationSupport: URL {
@@ -21,7 +21,6 @@ enum AppPaths {
         return base.appendingPathComponent("Kaiming", isDirectory: true)
     }
 
-    static var wallpapers: URL { applicationSupport.appendingPathComponent("Wallpapers", isDirectory: true) }
     static var captures: URL { applicationSupport.appendingPathComponent("Captures", isDirectory: true) }
     static var clipboardStore: URL { applicationSupport.appendingPathComponent("Clipboard", isDirectory: true) }
 

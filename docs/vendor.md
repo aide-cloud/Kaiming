@@ -59,7 +59,7 @@ Kaiming 的 Markdown 模块使用原生 TextKit 2 渲染，第三方代码全部
      可选的 `error`（中文错误文案），宿主 UI 据此显示「x/y」或错误提示。
    - 修正 `replaceAll` 的 `shouldChangeText(inRanges:replacementStrings:)` 参数顺序：
      按 AppKit 契约传升序 range，写回时仍从后往前，避免多段替换的索引偏移。
-   - 升级上游时若替换该文件，必须重新应用第 7 条；App 侧检查清单见 `docs/testing.md` 第 6 节。
+   - 升级上游时若替换该文件，必须重新应用第 7 条；App 侧检查清单见 `docs/testing.md` 第 5 节。
 
 ## 升级步骤
 
