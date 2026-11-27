@@ -112,6 +112,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return scope
     }
 
+    /// 快照用系统页分区：`--snapshot-system-section features` 渲染「系统功能」。
+    private static func snapshotSystemSection(_ args: [String]) -> SystemSection {
+        guard let index = args.firstIndex(of: "--snapshot-system-section"),
+              index + 1 < args.count,
+              let section = SystemSection(rawValue: args[index + 1]) else {
+            return .clean
+        }
+        return section
+    }
+
     /// 调试快照：不依赖屏幕录制权限，把 SwiftUI 面板 / Markdown 窗口渲染成 PNG 后退出。
     private func handleSnapshotArguments() {
         let args = ProcessInfo.processInfo.arguments
@@ -124,15 +134,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let tabIndex = args.firstIndex(of: "--snapshot-tab"), tabIndex + 1 < args.count {
                 switch args[tabIndex + 1] {
                 case "clipboard": AppState.shared.selectedTab = .clipboard
+                case "system": AppState.shared.selectedTab = .system
                 default: AppState.shared.selectedTab = .screenshot
                 }
             }
             let root = AnyView(
-                MenuBarPanel(clipboardScope: Self.snapshotClipboardScope(args))
-                    .environmentObject(AppState.shared)
-                    .environmentObject(SettingsStore.shared)
+                MenuBarPanel(
+                    clipboardScope: Self.snapshotClipboardScope(args),
+                    systemSection: Self.snapshotSystemSection(args)
+                )
+                .environmentObject(AppState.shared)
+                .environmentObject(SettingsStore.shared)
             )
             snapshotViaWindow(root: root, size: CGSize(width: 400, height: 580), path: path)
+            return
+        }
+
+        if let index = args.firstIndex(of: "--snapshot-menubar-label"), index + 1 < args.count {
+            let path = args[index + 1]
+            snapshotViaWindow(
+                root: AnyView(MenuBarLabel()),
+                size: CGSize(width: 520, height: 34),
+                path: path
+            )
             return
         }
 
@@ -308,10 +332,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// 用真实 NSWindow + NSHostingView 渲染，避免 ImageRenderer 对控件/AppKit 内容支持不全。
     private func snapshotViaWindow(root: AnyView, size: CGSize, path: String) {
-        let hosting = NSHostingView(rootView: root)
+        let light = ProcessInfo.processInfo.environment["KAIMING_SNAPSHOT_LIGHT"] == "1"
+        if light {
+            NSApp.appearance = NSAppearance(named: .aqua)
+        }
+        let content = light ? AnyView(root.environment(\.colorScheme, .light)) : root
+        let hosting = NSHostingView(rootView: content)
         hosting.frame = NSRect(origin: .zero, size: size)
         hosting.wantsLayer = true
-        hosting.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        hosting.layer?.backgroundColor = (light ? NSColor.white : NSColor.windowBackgroundColor).cgColor
         let window = NSWindow(
             contentRect: hosting.frame,
             styleMask: [.titled, .closable],
@@ -320,15 +349,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         window.title = "Kaiming Snapshot"
         window.contentView = hosting
-        window.backgroundColor = .windowBackgroundColor
+        window.backgroundColor = light ? .white : .windowBackgroundColor
         window.level = .floating
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        if light {
+            window.appearance = NSAppearance(named: .aqua)
+        }
         window.orderFrontRegardless()
         window.makeKey()
         debugSnapshotWindow = window
 
         Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            let delay = ProcessInfo.processInfo.environment["KAIMING_SNAPSHOT_DELAY"]
+                .flatMap(Double.init) ?? 2
+            try? await Task.sleep(nanoseconds: UInt64(max(delay, 0.2) * 1_000_000_000))
             hosting.layoutSubtreeIfNeeded()
             if let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) {
                 hosting.cacheDisplay(in: hosting.bounds, to: rep)
@@ -358,6 +392,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if args.contains("--logic-test-overlay-view") {
             CaptureOverlayRenderTest.runViewPathTest()
+            return
+        }
+        if args.contains("--logic-test-system") {
+            SystemSelfTest.run()
+            return
+        }
+        if args.contains("--logic-test-uninstall") {
+            let path: String? = {
+                guard let index = args.firstIndex(of: "--logic-test-uninstall"),
+                      index + 1 < args.count else { return nil }
+                return args[index + 1]
+            }()
+            AppUninstallerSelfTest.run(reportPath: path)
             return
         }
         if let index = args.firstIndex(of: "--render-test-overlay-corners"),

@@ -34,6 +34,7 @@ final class SettingsStore: ObservableObject {
         static let markdownFontSize = "kaiming.markdown.fontSize"
         static let markdownLivePreview = "kaiming.markdown.livePreview"
         static let markdownPageWidth = "kaiming.markdown.pageWidth"
+        static let systemStatusMetrics = "kaiming.system.statusBarMetrics"
     }
 
     private let defaults: UserDefaults
@@ -168,6 +169,23 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(markdownPageWidth.rawValue, forKey: Keys.markdownPageWidth) }
     }
 
+    // MARK: - 系统
+
+    /// 菜单栏展示哪些指标；默认全部开启（首次启动 / 未写入过键）。
+    @Published var statusBarMetrics: Set<SystemStatusMetric> {
+        didSet {
+            defaults.set(statusBarMetrics.map(\.rawValue).sorted(), forKey: Keys.systemStatusMetrics)
+        }
+    }
+
+    func toggleStatusMetric(_ metric: SystemStatusMetric) {
+        if statusBarMetrics.contains(metric) {
+            statusBarMetrics.remove(metric)
+        } else {
+            statusBarMetrics.insert(metric)
+        }
+    }
+
     // MARK: - 开机启动（由 SMAppService 真实状态驱动）
 
     @Published private(set) var launchAtLogin = false
@@ -201,6 +219,12 @@ final class SettingsStore: ObservableObject {
         markdownLivePreview = bool(Keys.markdownLivePreview, default: true)
         let pageWidthRaw = defaults.string(forKey: Keys.markdownPageWidth) ?? MarkdownPageWidth.standard.rawValue
         markdownPageWidth = MarkdownPageWidth(rawValue: pageWidthRaw) ?? .standard
+
+        if let stored = defaults.stringArray(forKey: Keys.systemStatusMetrics) {
+            statusBarMetrics = Set(stored.compactMap(SystemStatusMetric.init(rawValue:)))
+        } else {
+            statusBarMetrics = Set(SystemStatusMetric.allCases)
+        }
 
         launchAtLogin = SMAppService.mainApp.status == .enabled
     }
@@ -247,6 +271,7 @@ final class SettingsStore: ObservableObject {
         markdownFontSize = 15
         markdownLivePreview = true
         markdownPageWidth = .standard
+        statusBarMetrics = Set(SystemStatusMetric.allCases)
         Log.app.info("Settings reset to defaults")
     }
 }

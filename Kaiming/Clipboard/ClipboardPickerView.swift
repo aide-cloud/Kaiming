@@ -27,13 +27,14 @@ struct ClipboardPickerView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            header
+
             searchBar
-                .padding(.horizontal, 14)
-                .padding(.top, 12)
-                .padding(.bottom, 8)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 10)
 
             scopeBar
-                .padding(.horizontal, 14)
+                .padding(.horizontal, 16)
                 .padding(.bottom, 10)
 
             Divider()
@@ -99,12 +100,41 @@ struct ClipboardPickerView: View {
         }
     }
 
+    // MARK: - 顶部
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            PanelIconBadge(symbol: "doc.on.clipboard", tint: PanelPalette.mint, size: 26)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text("剪贴板")
+                    .font(.system(size: 13, weight: .semibold))
+                Text(scope == .favorites
+                    ? "收藏项永久保留，可随时取消"
+                    : "↑↓ 选择 · ↵ 复制 · ⌘D 收藏")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 4)
+
+            PanelChip(
+                text: HotKeyAction.openClipboard.displayString,
+                tint: .secondary
+            )
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 14)
+        .padding(.bottom, 10)
+    }
+
     // MARK: - 搜索框
 
     private var searchBar: some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 13, weight: .medium))
+                .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.secondary)
 
             ClipboardPickerSearchField(
@@ -132,47 +162,53 @@ struct ClipboardPickerView: View {
                 .accessibilityLabel("清空搜索")
                 .fixedSize()
             }
-
-            Text(HotKeyAction.openClipboard.displayString)
-                .font(.system(size: 9, weight: .medium, design: .rounded))
-                .foregroundStyle(.tertiary)
-                .padding(.horizontal, 5)
-                .padding(.vertical, 2)
-                .background(
-                    Capsule().fill(Color.secondary.opacity(0.10))
-                )
-                .fixedSize()
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 11)
+        .padding(.vertical, 9)
         .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.secondary.opacity(0.10))
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(Color.primary.opacity(0.05))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(Color.secondary.opacity(0.14))
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.06))
         )
     }
 
     // MARK: - 分区 tab
 
     private var scopeBar: some View {
-        HStack(spacing: 8) {
-            Picker("剪贴板分区", selection: $scope) {
-                ForEach(ClipboardScope.allCases) { scope in
-                    Text("\(scope.title) \(manager.count(in: scope))")
-                        .tag(scope)
+        HStack(spacing: 18) {
+            ForEach(ClipboardScope.allCases) { item in
+                Button {
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        scope = item
+                    }
+                } label: {
+                    VStack(spacing: 4) {
+                        HStack(spacing: 4) {
+                            Text(item.title)
+                                .font(.system(size: 11, weight: scope == item ? .semibold : .regular))
+                                .foregroundStyle(scope == item ? Color.primary : Color.secondary)
+                            Text("\(manager.count(in: item))")
+                                .font(.system(size: 8.5))
+                                .foregroundStyle(.tertiary)
+                        }
+                        Capsule()
+                            .fill(scope == item ? Color.accentColor : Color.clear)
+                            .frame(height: 2)
+                    }
+                    .fixedSize()
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .help(item == .favorites ? "收藏项永久保留" : "按复制时间倒序")
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(width: 200)
 
-            Spacer(minLength: 0)
+            Spacer(minLength: 4)
 
-            Text(scope == .favorites ? "收藏项永久保留，可随时取消收藏" : "实时历史按复制时间倒序")
-                .font(.system(size: 9.5))
+            Text(scope == .favorites ? "收藏永久保留" : "按复制时间倒序")
+                .font(.system(size: 9))
                 .foregroundStyle(.tertiary)
                 .lineLimit(1)
         }
@@ -187,18 +223,32 @@ struct ClipboardPickerView: View {
                     emptyState
                 } else {
                     ScrollView {
-                        LazyVStack(spacing: 2) {
-                            ForEach(entries) { entry in
+                        LazyVStack(spacing: 0) {
+                            ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
                                 row(entry)
                                     .id(entry.id)
+                                if index < entries.count - 1 {
+                                    Divider()
+                                        .opacity(0.16)
+                                        .padding(.leading, 54)
+                                }
                             }
                         }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 6)
+                        .padding(6)
                     }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.primary.opacity(0.05))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.06))
+            )
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
             .onChange(of: selectedID) { _, id in
                 guard let id else { return }
                 withAnimation(.easeOut(duration: 0.12)) {
@@ -213,58 +263,62 @@ struct ClipboardPickerView: View {
         let isSelected = selectedID == entry.id
         let isHovered = hoveredID == entry.id
 
-        return HStack(spacing: 10) {
-            leadingVisual(for: item)
-                .frame(width: 34, height: 34)
+        return HStack(spacing: 6) {
+            Button {
+                activate(entry)
+            } label: {
+                HStack(spacing: 10) {
+                    leadingVisual(for: item)
+                        .frame(width: 34, height: 34)
 
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 5) {
-                    Text(title(for: item))
-                        .font(.system(size: 12.5))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 5) {
+                            Text(title(for: item))
+                                .font(.system(size: 12))
+                                .lineLimit(1)
+                                .truncationMode(.tail)
 
-                    if entry.isCurrent {
-                        badge("当前", color: .accentColor)
+                            if entry.isCurrent {
+                                PanelChip(text: "当前", tint: .accentColor)
+                            }
+                        }
+
+                        Text(rowMeta(for: item))
+                            .font(.system(size: 9.5))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
 
-                    if item.isFavorite {
-                        Image(systemName: "star.fill")
-                            .font(.system(size: 8))
-                            .foregroundStyle(.orange)
-                            .help("已收藏，永久保留")
+                    Spacer(minLength: 4)
+
+                    if isSelected {
+                        Image(systemName: "return")
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(.tertiary)
+                            .help("按 Return 复制")
                     }
                 }
-
-                Text(rowMeta(for: item))
-                    .font(.system(size: 9.5))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .help("单击复制\(item.kind.title)")
 
-            Spacer(minLength: 4)
-
-            if isSelected {
-                Image(systemName: "return")
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundStyle(.tertiary)
-                    .help("按 Return 复制")
-            }
+            favoriteButton(for: entry, isSelected: isSelected)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
         .contentShape(Rectangle())
         .background(
             RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .fill(
                     isSelected
-                        ? Color.accentColor.opacity(0.16)
-                        : (isHovered ? Color.secondary.opacity(0.08) : Color.clear)
+                        ? Color.accentColor.opacity(0.14)
+                        : (isHovered ? Color.secondary.opacity(0.07) : Color.clear)
                 )
         )
         .overlay(
             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .strokeBorder(isSelected ? Color.accentColor.opacity(0.35) : Color.clear)
+                .strokeBorder(isSelected ? Color.accentColor.opacity(0.30) : Color.clear)
         )
         .onHover { hovering in
             if hovering {
@@ -273,10 +327,34 @@ struct ClipboardPickerView: View {
                 hoveredID = nil
             }
         }
-        .onTapGesture {
-            activate(entry)
+        .contextMenu {
+            Button(item.isFavorite ? "取消收藏" : "收藏") {
+                toggleFavorite(entry)
+            }
+            Button("复制") {
+                activate(entry)
+            }
         }
-        .help("单击复制\(item.kind.title)")
+    }
+
+    private func favoriteButton(for entry: PickerEntry, isSelected: Bool) -> some View {
+        let item = entry.item
+        return Button {
+            toggleFavorite(entry)
+        } label: {
+            Image(systemName: item.isFavorite ? "star.fill" : "star")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(item.isFavorite ? Color.orange : Color.secondary.opacity(isSelected ? 0.9 : 0.55))
+                .frame(width: 24, height: 24)
+                .background(
+                    Circle()
+                        .fill(item.isFavorite ? Color.orange.opacity(0.12) : Color.clear)
+                )
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help(item.isFavorite ? "取消收藏" : "收藏（永久保留）")
+        .accessibilityLabel(item.isFavorite ? "取消收藏" : "收藏")
     }
 
     @ViewBuilder
@@ -293,42 +371,28 @@ struct ClipboardPickerView: View {
                         .strokeBorder(Color.secondary.opacity(0.18))
                 )
         } else {
-            Image(systemName: item.kind.symbolName)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(item.kind.tint)
-                .frame(width: 32, height: 32)
-                .background(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(item.kind.tint.opacity(0.13))
-                )
+            PanelIconBadge(symbol: item.kind.symbolName, tint: item.kind.tint, size: 30)
         }
-    }
-
-    private func badge(_ text: String, color: Color) -> some View {
-        Text(text)
-            .font(.system(size: 8, weight: .semibold))
-            .foregroundStyle(color)
-            .padding(.horizontal, 4)
-            .padding(.vertical, 1)
-            .background(
-                Capsule().fill(color.opacity(0.14))
-            )
     }
 
     private var emptyState: some View {
         VStack(spacing: 8) {
-            Image(systemName: hasSearch ? "magnifyingglass" : (scope == .favorites ? "star" : "clipboard"))
-                .font(.system(size: 28, weight: .light))
-                .foregroundStyle(.tertiary)
+            PanelIconBadge(
+                symbol: hasSearch ? "magnifyingglass" : (scope == .favorites ? "star" : "clipboard"),
+                tint: hasSearch ? .secondary : (scope == .favorites ? PanelPalette.amber : .secondary),
+                size: 38
+            )
 
             Text(emptyTitle)
-                .font(.system(size: 13, weight: .medium))
+                .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.secondary)
 
             Text(emptyHint)
-                .font(.system(size: 10))
+                .font(.system(size: 9.5))
                 .foregroundStyle(.tertiary)
                 .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 30)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(24)
@@ -348,24 +412,49 @@ struct ClipboardPickerView: View {
                 : "可搜索文本内容、文件名，或「文本 / 图片 / 文件 / 富文本」。"
         }
         return scope == .favorites
-            ? "在剪贴板面板里点 ☆ 收藏；收藏项永久保留、可随时移除。"
-            : "复制文本、图片或文件后，历史会显示在这里。"
+            ? "在任意记录右侧点 ☆ 收藏；收藏项永久保留、可随时移除。"
+            : "复制文本、图片或文件后，历史会显示在这里；右侧 ☆ 可收藏。"
     }
 
     // MARK: - 底部提示
 
     private var footer: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 12) {
             keyHint("↑↓", "选择")
             keyHint("↵", "复制")
+
+            Button {
+                toggleFavoriteSelected()
+            } label: {
+                HStack(spacing: 4) {
+                    Text("⌘D")
+                        .font(.system(size: 9, weight: .semibold, design: .rounded))
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(
+                            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                .fill(Color.secondary.opacity(0.12))
+                        )
+                    Text(selectedIsFavorite ? "取消收藏" : "收藏")
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(selectedEntry == nil)
+            .keyboardShortcut("d", modifiers: .command)
+            .help(selectedIsFavorite ? "取消收藏选中项（⌘D）" : "收藏选中项（⌘D）")
+
             keyHint("esc", "关闭")
+
             Spacer()
+
             Text("\(entries.count) 条")
                 .font(.system(size: 9.5))
                 .foregroundStyle(.tertiary)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 9)
     }
 
     private func keyHint(_ key: String, _ label: String) -> some View {
@@ -473,6 +562,32 @@ struct ClipboardPickerView: View {
             return "\(item.kind.title) · 收藏于 \(ClipboardPanelView.relativeString(since: favoritedAt))"
         }
         return "\(item.kind.title) · \(ClipboardPanelView.relativeString(since: item.createdAt))"
+    }
+
+    // MARK: - 收藏
+
+    private var selectedEntry: PickerEntry? {
+        guard let selectedID else { return nil }
+        return entries.first(where: { $0.id == selectedID })
+    }
+
+    private var selectedIsFavorite: Bool {
+        selectedEntry?.item.isFavorite == true
+    }
+
+    private func toggleFavoriteSelected() {
+        guard let entry = selectedEntry else { return }
+        toggleFavorite(entry)
+    }
+
+    private func toggleFavorite(_ entry: PickerEntry) {
+        manager.toggleFavorite(entry.item)
+        Log.clipboard.info(
+            "Clipboard picker toggled favorite \(entry.item.id.uuidString, privacy: .public)"
+        )
+        #if DEBUG
+        NSLog("Kaiming debug: clipboard picker favorite=\(!entry.item.isFavorite) kind=\(entry.item.kind.rawValue)")
+        #endif
     }
 
     // MARK: - 键盘 / 操作

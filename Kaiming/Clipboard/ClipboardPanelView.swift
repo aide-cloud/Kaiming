@@ -22,8 +22,8 @@ struct ClipboardPanelView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            currentSection
+        VStack(alignment: .leading, spacing: 10) {
+            currentCard
             historySection
             clearSection
         }
@@ -33,7 +33,7 @@ struct ClipboardPanelView: View {
         .background(
             // 菜单栏面板收起时 SwiftUI 不会销毁视图树（@State 会保留），
             // 因此额外监听承载窗口失 key / 关闭，兜底复位内联确认态。
-            PanelDismissObserver(onDismiss: cancelClearHistoryConfirmation)
+            PanelVisibilityObserver(onDismiss: cancelClearHistoryConfirmation)
                 .frame(width: 0, height: 0)
         )
         .onChange(of: scope) { _, _ in
@@ -52,14 +52,20 @@ struct ClipboardPanelView: View {
 
     // MARK: - 当前剪贴板
 
-    private var currentSection: some View {
+    private var currentCard: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Image(systemName: "doc.on.clipboard")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                Text("当前剪贴板")
-                    .font(.system(size: 12, weight: .semibold))
+            HStack(spacing: 8) {
+                PanelIconBadge(symbol: "doc.on.clipboard", tint: PanelPalette.mint, size: 28)
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("当前剪贴板")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text(currentSubtitle)
+                        .font(.system(size: 8))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
+
                 Spacer(minLength: 4)
                 monitoringBadge
             }
@@ -67,12 +73,13 @@ struct ClipboardPanelView: View {
             if let item = manager.currentItem {
                 currentPreview(item)
 
-                HStack(spacing: 8) {
+                HStack(spacing: 6) {
                     Button {
                         manager.copyToPasteboard(item)
                     } label: {
                         Label("复制", systemImage: "doc.on.doc")
                     }
+                    .buttonStyle(.borderedProminent)
                     .controlSize(.small)
                     .help("再次复制到剪贴板")
 
@@ -81,23 +88,16 @@ struct ClipboardPanelView: View {
                     } label: {
                         Label("清空", systemImage: "xmark.circle")
                     }
+                    .buttonStyle(.bordered)
                     .controlSize(.small)
                     .help("清空系统剪贴板，历史记录保留")
 
                     Spacer(minLength: 0)
-
-                    Text("\(item.kind.title) · \(relativeTime(for: item))")
-                        .font(.system(size: 9))
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
                 }
             } else {
                 HStack(spacing: 8) {
-                    Image(systemName: "clipboard")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.tertiary)
                     Text(emptyCurrentText)
-                        .font(.system(size: 10))
+                        .font(.system(size: 9))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 4)
@@ -108,15 +108,12 @@ struct ClipboardPanelView: View {
                 }
             }
         }
-        .padding(10)
-        .background(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(Color.secondary.opacity(0.07))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .strokeBorder(Color.secondary.opacity(0.14))
-        )
+        .panelCard(padding: 10)
+    }
+
+    private var currentSubtitle: String {
+        guard let item = manager.currentItem else { return "系统剪贴板" }
+        return "\(item.kind.title) · \(relativeTime(for: item))"
     }
 
     private var monitoringBadge: some View {
@@ -125,7 +122,7 @@ struct ClipboardPanelView: View {
                 .fill(manager.isMonitoring ? Color.green : Color.secondary.opacity(0.55))
                 .frame(width: 5, height: 5)
             Text(manager.isMonitoring ? "监控中" : "已暂停")
-                .font(.system(size: 9))
+                .font(.system(size: 8))
                 .foregroundStyle(.secondary)
         }
         .help(manager.isMonitoring ? "正在按设置轮询剪贴板变化" : "剪贴板监控已暂停，可在设置中开启")
@@ -143,19 +140,19 @@ struct ClipboardPanelView: View {
         switch item.kind {
         case .text:
             Text(Self.preview(item.text, limit: 2_000))
-                .font(.system(size: 11))
-                .lineLimit(4)
+                .font(.system(size: 10.5))
+                .lineLimit(3)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
 
         case .richText:
             VStack(alignment: .leading, spacing: 3) {
                 Text(Self.preview(item.text, limit: 1_500))
-                    .font(.system(size: 11))
-                    .lineLimit(3)
+                    .font(.system(size: 10.5))
+                    .lineLimit(2)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Text("富文本 · 复制时以纯文本写入")
-                    .font(.system(size: 9))
+                    .font(.system(size: 8))
                     .foregroundStyle(.tertiary)
             }
 
@@ -164,27 +161,27 @@ struct ClipboardPanelView: View {
                 Image(nsImage: image)
                     .resizable()
                     .scaledToFit()
-                    .frame(maxWidth: .infinity, maxHeight: 120)
-                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .frame(maxWidth: .infinity, maxHeight: 110)
+                    .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                     .overlay(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .strokeBorder(Color.secondary.opacity(0.15))
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .strokeBorder(Color.primary.opacity(0.10))
                     )
             } else {
                 Label("图片预览不可用", systemImage: "photo.badge.exclamationmark")
-                    .font(.system(size: 10))
+                    .font(.system(size: 9))
                     .foregroundStyle(.secondary)
             }
 
         case .fileURLs:
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 3) {
                 ForEach(Array(item.fileURLs.prefix(3)), id: \.self) { url in
                     HStack(spacing: 5) {
                         Image(systemName: "doc.fill")
-                            .font(.system(size: 9))
-                            .foregroundStyle(.secondary)
+                            .font(.system(size: 8))
+                            .foregroundStyle(PanelPalette.sky)
                         Text(url.lastPathComponent)
-                            .font(.system(size: 10))
+                            .font(.system(size: 9))
                             .lineLimit(1)
                             .truncationMode(.middle)
                         Spacer(minLength: 0)
@@ -193,14 +190,14 @@ struct ClipboardPanelView: View {
                 }
                 if item.fileURLs.count > 3 {
                     Text("等 \(item.fileURLs.count) 个文件")
-                        .font(.system(size: 9))
+                        .font(.system(size: 8))
                         .foregroundStyle(.tertiary)
                 }
             }
 
         case .other:
             Text("暂不支持的内容类型")
-                .font(.system(size: 10))
+                .font(.system(size: 9))
                 .foregroundStyle(.secondary)
         }
     }
@@ -208,37 +205,61 @@ struct ClipboardPanelView: View {
     // MARK: - 历史记录（收藏 / 实时）
 
     private var historySection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Picker("剪贴板分区", selection: $scope) {
-                    ForEach(ClipboardScope.allCases) { scope in
-                        Text("\(scope.title) \(manager.count(in: scope))")
-                            .tag(scope)
+        VStack(alignment: .leading, spacing: 8) {
+            scopeTabs
+            Text(scopeFootnote)
+                .font(.system(size: 8))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 2)
+            historyCard
+        }
+    }
+
+    private var scopeTabs: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 18) {
+                ForEach(ClipboardScope.allCases) { item in
+                    Button {
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            scope = item
+                        }
+                    } label: {
+                        VStack(spacing: 4) {
+                            HStack(spacing: 4) {
+                                Text(item.title)
+                                    .font(.system(size: 10.5, weight: scope == item ? .semibold : .regular))
+                                    .foregroundStyle(scope == item ? Color.primary : Color.secondary)
+                                Text("\(manager.count(in: item))")
+                                    .font(.system(size: 8))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            Capsule()
+                                .fill(scope == item ? Color.accentColor : Color.clear)
+                                .frame(height: 2)
+                        }
+                        .fixedSize()
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
+                    .help(item == .favorites ? "收藏项永久保留" : "按复制时间排列，超出上限淘汰最旧")
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width: 176)
-                .help("「收藏」永久保留；「实时」按复制时间累积，超出上限淘汰最旧记录")
 
                 Spacer(minLength: 4)
 
                 Button {
-                    WindowPlacementCenter.shared.willOpen(scene: AppWindowScene.clipboardPicker)
-                    openWindow(id: AppWindowScene.clipboardPicker)
-                    NSApp.activate(ignoringOtherApps: true)
+                    openClipboardPicker()
                 } label: {
                     HStack(spacing: 3) {
                         Image(systemName: "rectangle.on.rectangle")
-                            .font(.system(size: 9, weight: .medium))
+                            .font(.system(size: 8, weight: .medium))
                         Text(HotKeyAction.openClipboard.displayString)
-                            .font(.system(size: 9, weight: .medium, design: .rounded))
+                            .font(.system(size: 8, weight: .medium, design: .rounded))
                     }
+                    .foregroundStyle(.secondary)
                     .padding(.horizontal, 5)
-                    .padding(.vertical, 2)
-                    .background(
-                        Capsule().fill(Color.secondary.opacity(0.12))
-                    )
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(Color.primary.opacity(0.06)))
                 }
                 .buttonStyle(.plain)
                 .help("打开剪贴板快捷选择（\(HotKeyAction.openClipboard.displayString)）")
@@ -248,27 +269,32 @@ struct ClipboardPanelView: View {
                     manager.refreshNow()
                 } label: {
                     Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 10))
+                        .font(.system(size: 9, weight: .semibold))
                 }
                 .buttonStyle(.borderless)
                 .help("立即刷新剪贴板")
                 .accessibilityLabel("刷新剪贴板")
             }
+            Divider()
+        }
+    }
 
-            if scopedItems.isEmpty {
-                emptyHistory
-            } else {
-                LazyVStack(spacing: 2) {
-                    ForEach(scopedItems) { item in
-                        ClipboardHistoryRow(item: item, scope: scope)
+    @ViewBuilder
+    private var historyCard: some View {
+        if scopedItems.isEmpty {
+            emptyHistory.panelCard()
+        } else {
+            VStack(spacing: 0) {
+                ForEach(Array(scopedItems.enumerated()), id: \.element.id) { index, item in
+                    ClipboardHistoryRow(item: item, scope: scope)
+                    if index < scopedItems.count - 1 {
+                        Divider()
+                            .opacity(0.22)
+                            .padding(.leading, 38)
                     }
                 }
             }
-
-            Text(scopeFootnote)
-                .font(.system(size: 9))
-                .foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
+            .panelCard(padding: 4)
         }
     }
 
@@ -279,20 +305,22 @@ struct ClipboardPanelView: View {
     private var scopeFootnote: String {
         switch scope {
         case .live:
-            return "实时最多保留 \(settings.clipboardHistoryLimit) 条，超出后淘汰最旧的记录；收藏项永久保留，不受影响。"
+            return "实时最多保留 \(settings.clipboardHistoryLimit) 条；收藏永久保留，不受影响。"
         case .favorites:
-            return "收藏项永久保留，不计入实时历史的条数上限；可随时取消收藏或删除。"
+            return "收藏项永久保留，不计入实时历史的条数上限。"
         }
     }
 
     private var emptyHistory: some View {
-        VStack(spacing: 5) {
-            Image(systemName: scope == .favorites ? "star" : "tray")
-                .font(.system(size: 17))
-                .foregroundStyle(.tertiary)
+        VStack(spacing: 6) {
+            PanelIconBadge(
+                symbol: scope == .favorites ? "star" : "tray",
+                tint: scope == .favorites ? PanelPalette.amber : .secondary,
+                size: 30
+            )
 
             Text(scope == .favorites ? "还没有收藏" : "暂无实时历史")
-                .font(.system(size: 11, weight: .medium))
+                .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(.secondary)
 
             Text(
@@ -300,34 +328,33 @@ struct ClipboardPanelView: View {
                     ? "在「实时」里点 ☆ 即可收藏，收藏项永久保留、可随时移除。"
                     : "复制文本、图片或文件后会自动出现在这里。"
             )
-            .font(.system(size: 9))
+            .font(.system(size: 8))
             .foregroundStyle(.tertiary)
             .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 16)
+        .padding(.vertical, 14)
     }
 
     // MARK: - 清空实时历史
 
+    @ViewBuilder
     private var clearSection: some View {
-        VStack(spacing: 0) {
-            Divider()
-                .padding(.bottom, 10)
-
-            if isConfirmingClearHistory {
-                clearHistoryConfirmation
-            } else {
-                Button(role: .destructive) {
-                    isConfirmingClearHistory = true
-                } label: {
-                    Label("清空实时历史", systemImage: "trash")
-                        .frame(maxWidth: .infinity)
-                }
-                .controlSize(.small)
-                .disabled(manager.removableHistoryCount == 0)
-                .help("删除全部实时历史，收藏项会保留")
+        if isConfirmingClearHistory {
+            clearHistoryConfirmation
+        } else {
+            Button(role: .destructive) {
+                isConfirmingClearHistory = true
+            } label: {
+                Label("清空实时历史", systemImage: "trash")
+                    .frame(maxWidth: .infinity)
             }
+            .buttonStyle(.bordered)
+            .tint(.red)
+            .controlSize(.small)
+            .disabled(manager.removableHistoryCount == 0)
+            .help("删除全部实时历史，收藏项会保留")
         }
     }
 
@@ -342,9 +369,9 @@ struct ClipboardPanelView: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text("清空实时历史？")
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(.system(size: 10, weight: .semibold))
                     Text(clearHistoryDetail)
-                        .font(.system(size: 9))
+                        .font(.system(size: 8.5))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -373,11 +400,11 @@ struct ClipboardPanelView: View {
         }
         .padding(8)
         .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
                 .fill(Color.red.opacity(0.08))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
                 .strokeBorder(Color.red.opacity(0.22))
         )
     }
@@ -392,6 +419,12 @@ struct ClipboardPanelView: View {
     }
 
     // MARK: - 工具
+
+    private func openClipboardPicker() {
+        WindowPlacementCenter.shared.willOpen(scene: AppWindowScene.clipboardPicker)
+        openWindow(id: AppWindowScene.clipboardPicker)
+        NSApp.activate(ignoringOtherApps: true)
+    }
 
     private func relativeTime(for item: ClipboardItem) -> String {
         Self.relativeString(since: item.createdAt)
@@ -434,12 +467,11 @@ private struct ClipboardHistoryRow: View {
     var body: some View {
         HStack(alignment: .center, spacing: 7) {
             leadingVisual
-                .frame(width: 32, height: 32)
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 3) {
                     Text(previewText)
-                        .font(.system(size: 10.5))
+                        .font(.system(size: 10))
                         .lineLimit(2)
                         .truncationMode(.tail)
                         .multilineTextAlignment(.leading)
@@ -453,7 +485,7 @@ private struct ClipboardHistoryRow: View {
                 }
 
                 Text(rowDetail)
-                    .font(.system(size: 8.5))
+                    .font(.system(size: 8))
                     .foregroundStyle(.tertiary)
             }
 
@@ -468,8 +500,8 @@ private struct ClipboardHistoryRow: View {
         .padding(.vertical, 5)
         .contentShape(Rectangle())
         .background(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(isHovering ? Color.accentColor.opacity(0.09) : Color.clear)
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(isHovering ? Color.accentColor.opacity(0.08) : Color.clear)
         )
         .onHover { hovering in
             withAnimation(.easeOut(duration: 0.1)) {
@@ -497,21 +529,14 @@ private struct ClipboardHistoryRow: View {
             Image(nsImage: image)
                 .resizable()
                 .scaledToFill()
-                .frame(width: 30, height: 30)
-                .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                .frame(width: 24, height: 24)
+                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 4, style: .continuous)
-                        .strokeBorder(Color.secondary.opacity(0.18))
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.10))
                 )
         } else {
-            Image(systemName: item.kind.symbolName)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(item.kind.tint)
-                .frame(width: 26, height: 26)
-                .background(
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(item.kind.tint.opacity(0.13))
-                )
+            PanelIconBadge(symbol: item.kind.symbolName, tint: item.kind.tint, size: 24)
         }
     }
 
@@ -521,8 +546,8 @@ private struct ClipboardHistoryRow: View {
                 manager.copyToPasteboard(item)
             } label: {
                 Image(systemName: "doc.on.doc")
-                    .font(.system(size: 10))
-                    .frame(width: 18, height: 18)
+                    .font(.system(size: 9))
+                    .frame(width: 17, height: 17)
             }
             .buttonStyle(.borderless)
             .help("复制")
@@ -532,9 +557,9 @@ private struct ClipboardHistoryRow: View {
                 manager.toggleFavorite(item)
             } label: {
                 Image(systemName: item.isFavorite ? "star.fill" : "star")
-                    .font(.system(size: 10))
+                    .font(.system(size: 9))
                     .foregroundStyle(item.isFavorite ? Color.orange : Color.primary)
-                    .frame(width: 18, height: 18)
+                    .frame(width: 17, height: 17)
             }
             .buttonStyle(.borderless)
             .help(item.isFavorite ? "取消收藏" : "收藏（永久保留）")
@@ -544,8 +569,8 @@ private struct ClipboardHistoryRow: View {
                 manager.delete(item)
             } label: {
                 Image(systemName: "trash")
-                    .font(.system(size: 10))
-                    .frame(width: 18, height: 18)
+                    .font(.system(size: 9))
+                    .frame(width: 17, height: 17)
             }
             .buttonStyle(.borderless)
             .help(item.isFavorite ? "删除（收藏同时移除）" : "从实时历史中删除")
@@ -608,97 +633,6 @@ extension ClipboardKind {
         case .fileURLs: return .orange
         case .richText: return .purple
         case .other: return .gray
-        }
-    }
-}
-
-// MARK: - 菜单栏面板收起监听
-
-/// 监听承载本视图的窗口：窗口失 key（菜单栏面板被收起）或被关闭时回调。
-///
-/// 菜单栏面板收起后 SwiftUI 只是把窗口移出屏幕，视图树与 `@State` 都还活着；
-/// 仅靠 `onAppear`/`onDisappear` 不足以复位「本次打开才有效」的临时 UI 状态。
-private struct PanelDismissObserver: NSViewRepresentable {
-    var onDismiss: () -> Void
-
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView(frame: .zero)
-        context.coordinator.attach(to: view)
-        return view
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {
-        context.coordinator.onDismiss = onDismiss
-        context.coordinator.attach(to: nsView)
-    }
-
-    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
-        coordinator.detach()
-    }
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(onDismiss: onDismiss)
-    }
-
-    @MainActor
-    final class Coordinator {
-        var onDismiss: () -> Void
-
-        private var tokens: [NSObjectProtocol] = []
-        private weak var observedWindow: NSWindow?
-
-        init(onDismiss: @escaping () -> Void) {
-            self.onDismiss = onDismiss
-        }
-
-        /// 视图刚进入层级时 `window` 可能还是 nil；每次更新再试一次，直到绑定到真实窗口。
-        func attach(to view: NSView) {
-            guard observedWindow == nil else { return }
-            DispatchQueue.main.async { [weak self, weak view] in
-                guard let self, let window = view?.window else { return }
-                self.observe(window)
-            }
-        }
-
-        private func observe(_ window: NSWindow) {
-            guard observedWindow !== window else { return }
-            detach()
-            observedWindow = window
-
-            let center = NotificationCenter.default
-            tokens = [
-                center.addObserver(
-                    forName: NSWindow.didResignKeyNotification,
-                    object: window,
-                    queue: .main
-                ) { [weak self] _ in
-                    Task { @MainActor in self?.onDismiss() }
-                },
-                center.addObserver(
-                    forName: NSWindow.willCloseNotification,
-                    object: window,
-                    queue: .main
-                ) { [weak self] _ in
-                    Task { @MainActor in self?.onDismiss() }
-                },
-                // 点击其他应用时菜单栏面板也会收起，但窗口不一定先失 key；应用失活一并兜底。
-                center.addObserver(
-                    forName: NSApplication.didResignActiveNotification,
-                    object: NSApp,
-                    queue: .main
-                ) { [weak self] _ in
-                    Task { @MainActor in self?.onDismiss() }
-                },
-            ]
-        }
-
-        func detach() {
-            let center = NotificationCenter.default
-            for token in tokens {
-                center.removeObserver(token)
-            }
-            tokens.removeAll()
-            observedWindow = nil
         }
     }
 }

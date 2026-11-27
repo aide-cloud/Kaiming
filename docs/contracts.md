@@ -30,6 +30,7 @@ xcodebuild -project Kaiming.xcodeproj -scheme Kaiming -configuration Debug \
 | Lead | `Kaiming.xcodeproj/`、`Config/`、`Kaiming/App/`、`Kaiming/Shared/`、`Kaiming/MenuBar/`、`Kaiming/Settings/`、`Kaiming/Resources/`、`MarkdownKit/`、`docs/`、`Scripts/`、`README.md` |
 | Screenshot | `Kaiming/Screenshot/**` |
 | Clipboard | `Kaiming/Clipboard/**` |
+| SystemMonitor | `Kaiming/SystemMonitor/**` |
 | Markdown | `Kaiming/Markdown/**` |
 
 只在自己作用域内新增/修改文件。不要碰别人的目录，不要改 `Info.plist`、`SettingsStore`、`MenuBarPanel`、
@@ -84,7 +85,7 @@ enum ScreenCapturePermission {
 
 @MainActor final class AppState: ObservableObject {
     static let shared
-    var selectedTab: PanelTab            // .screenshot / .clipboard
+    var selectedTab: PanelTab            // .screenshot / .clipboard / .system
     private(set) var screenRecordingGranted: Bool
     private(set) var lastCapturedImage: NSImage?
     private(set) var lastCaptureDate: Date?
@@ -471,8 +472,10 @@ struct PermissionStatus: Equatable, Sendable { var isGranted: Bool; var checkedA
 - 条数上限只约束非收藏项：`enforceHistoryLimit()` 淘汰最旧的未收藏记录；
   `removableHistoryCount` 是「清空实时历史」与按钮禁用态的判据。
 - 面板（`ClipboardPanelView`）与快捷选择窗口（`ClipboardPickerView`）都用
-  `Picker(.segmented)` 呈现「收藏 N / 实时 N」两个 tab，搜索、↑/↓ 选择都在当前分区内生效；
-  切分区时选中项回到该分区第一条。
+  下划线分区呈现「收藏 N / 实时 N」，搜索、↑/↓ 选择都在当前分区内生效；切分区时选中项回到该分区第一条。
+- 快捷选择窗口每行右侧提供 ☆ 按钮（已收藏为橙色实心），并支持 ⌘D 切换选中项收藏；
+  点击 ☆ 不触发复制。若被收藏的是只存在于快捷选择里的「当前剪贴板」临时条目，
+  `toggleFavorite` 会先把它写入历史再标记收藏，避免静默失败。
 - 调试：`--snapshot-clipboard-scope favorites` 可让 `--snapshot-panel` / `--snapshot-clipboard-picker`
   直接渲染「收藏」页；`KAIMING_SUPPORT_DIR`（仅 DEBUG）把数据目录指到临时路径，避免截图污染真实历史。
 
@@ -512,3 +515,58 @@ struct PermissionStatus: Equatable, Sendable { var isGranted: Bool; var checkedA
 - 因模块删除而作废的旧条目：第 5 节 Wallpaper 公开入口、第 6 节壁纸消费方、第 13 / 18 / 22 节。
 - CLI 与 Markdown 打开通道保留（第 15 节）。
 - 调试快照：`--snapshot-tab` 只接受 `clipboard`，其余值回退到截图页。
+
+## 29. 系统资源模块（v1.2 新增）
+
+- `AppState.PanelTab` 新增 `.system`；菜单栏面板为「截图 / 剪贴板 / 系统」三个 tab。
+  第 28 节「只保留两个 tab」的表述以本节为准。
+- 新增 `Kaiming/SystemMonitor/**`（Lead 维护），唯一入口：
+
+```swift
+@MainActor final class SystemMonitor: ObservableObject {
+    static let shared: SystemMonitor
+    // 只读快照：memory / cpu / disk / network / sensors / apps / networkHistory
+    func startMonitoring()
+    func stopMonitoring()
+    func refreshNow() async
+    func scanCachesIfNeeded()
+    func scanCaches()
+    func cleanSelectedCaches() async -> CacheCleanOutcome
+    func releaseMemory() async -> MemoryReleaseResult
+}
+```
+
+- `SystemPanelView(initialSection:)` 是新 tab 的根视图；`MenuBarPanel` 增加
+  `systemSection: SystemSection = .clean` 仅供调试快照指定分区。
+- 原 `ClipboardPanelView` 私有的面板收起观察器提升为 `Shared/PanelVisibilityObserver`，
+  同时提供 `onVisible`；剪贴板与系统页共用。
+- 调试快照新增：`--snapshot-tab system`、`--snapshot-system-section clean|features`；
+  `KAIMING_SNAPSHOT_DELAY` 秒数控制等待（缓存的首次扫描约数秒）。
+- 系统模块新增 `--logic-test-system` 自检入口（DEBUG）。
+
+## 30. 状态栏指标（v1.2 新增）
+
+- 新增 `Shared/SystemStatusMetric`（`.cpuTemperature / .cpuUsage / .fanSpeed / .memoryUsage /
+  .diskUsage / .networkDownload / .networkUpload`），供设置与菜单栏共享。
+- `SettingsStore` 新增 `statusBarMetrics: Set<SystemStatusMetric>`（键
+  `kaiming.system.statusBarMetrics`）：未写入时默认全部；`toggleStatusMetric(_:)` 供界面切换；
+  `resetToDefaults()` 恢复全部。
+- `MenuBarLabel` 观察 `SystemMonitor.shared`，把选中的指标绘制成单张模板图片
+  （开明 logo + SF Symbol + 数值；见 `MenuBarStatusImage`）；菜单栏采样由 `SystemMonitor` 的
+  `panelActive || !statusMetrics.isEmpty` 驱动，面板收起后 3 秒轻量采样，全部关闭后停止。
+- 调试快照新增 `--snapshot-menubar-label <path>`；`--logic-test-system` 覆盖状态栏循环下的采样串行化。
+
+## 31. 应用卸载（v1.2 新增）
+
+- 新增 `Kaiming/SystemMonitor/AppUninstaller.swift`（Lead 维护）：
+  - `InstalledApp` / `UninstallCategory` / `UninstallItem` / `UninstallOutcome`；
+  - `AppInventory.scan()`：`/Applications` + `~/Applications`，过滤 Apple / 开明自身 / 符号链接；
+  - `AppResidueScanner.scan(app)`：按 bundle id（强匹配）与文件系统应用名（精确匹配）扫描
+    `~/Library` 已知位置（含 Group Containers、插件/扩展），并扫描常用用户目录的顶层同名项，只读；
+  - `AppResidueScanner.remove(items:app:)`：先删应用本体，失败立即中止；只允许选中的应用本体、
+    `~/Library` 用户目录与常用用户目录的直接子项；返回成功数、释放字节与失败路径。
+- 新增 `AppUninstallModel`（@MainActor）与 `AppUninstallPane`；`SystemSection` 新增 `.uninstall`。
+- 运行中的应用用 `NSRunningApplication.terminate()` 退出，最多等待 3 秒，拒绝退出则中止。
+- 不处理 `/Library` 系统级文件、Group Containers、App Store 收据与应用自定义目录；TCC 保护目录
+  需要完全磁盘访问权限，失败项写入 `Log.system` 并保留在详情页。
+- 新增 `--logic-test-uninstall <report>`（DEBUG），用带前缀的临时夹具验证扫描/删除/诱饵保留/安全护栏。

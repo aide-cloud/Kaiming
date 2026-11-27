@@ -23,7 +23,7 @@ grep -rn "CGDisplayCreateImage" Kaiming --include='*.swift'               # 仅�
 - [ ] `open build/dd/Build/Products/Debug/Kaiming.app` 后进程存活。
 - [ ] 菜单栏出现开明兽（Mono 线稿）图标；Dock 无图标（`LSUIElement`）。
 - [ ] 启动时**不**自动弹出 Markdown 窗口。
-- [ ] 菜单栏图标点击弹出 400×580 面板，两个 Tab（截图/剪贴板）可切换。
+- [ ] 菜单栏图标点击弹出 400×580 面板，三个 Tab（截图/剪贴板/系统）可切换。
 - [ ] 点面板右上 Markdown 图标打开独立窗口；关闭后可再次打开。
 - [ ] 设置窗口可打开（面板底部齿轮 / ⌘,）。
 - [ ] 多显示器：鼠标停在副屏时 ⌥⇧M / ⌥⇧C，窗口出现在**副屏中央**（不是主屏）。
@@ -39,7 +39,15 @@ APP=build/dd/Build/Products/Debug/Kaiming.app
 "$APP/Contents/MacOS/Kaiming" --open-settings          # 打开设置窗口
 "$APP/Contents/MacOS/Kaiming" --open-clipboard         # 打开剪贴板快捷选择窗口
 "$APP/Contents/MacOS/Kaiming" --open-folder /abs/path  # 模拟 CLI 打开目录树
-"$APP/Contents/MacOS/Kaiming" --snapshot-panel /tmp/panel.png [--snapshot-tab clipboard] [--snapshot-fake-capture] [--snapshot-clipboard-scope live|favorites]
+"$APP/Contents/MacOS/Kaiming" --snapshot-panel /tmp/panel.png [--snapshot-tab clipboard|system] [--snapshot-fake-capture] [--snapshot-clipboard-scope live|favorites] [--snapshot-system-section clean|features|uninstall]
+# 系统页首次会扫描 ~/Library/Caches，如需截图里显示扫描结果：KAIMING_SNAPSHOT_DELAY=10
+"$APP/Contents/MacOS/Kaiming" --logic-test-system   # 采样 / 缓存扫描 / 内存释放自检（只读 + 一次释放）
+"$APP/Contents/MacOS/Kaiming" --logic-test-uninstall /tmp/uninstall-test.txt  # 卸载器夹具自检（创建并清理临时文件）
+KAIMING_UNINSTALL_SELECT=bestzip KAIMING_UNINSTALL_CONFIRM=1 KAIMING_SNAPSHOT_DELAY=9 \
+"$APP/Contents/MacOS/Kaiming" --snapshot-panel /tmp/uninstall-detail.png --snapshot-tab system --snapshot-system-section uninstall
+# 以上 auto-select / confirm 仅 DEBUG 生效；uninstall 自检需要写入 ~/Applications 与 ~/Library
+# 的测试夹具，在 DSH 沙盒里运行会失败，请用正常 App 进程或完全磁盘访问权限运行。
+"$APP/Contents/MacOS/Kaiming" --snapshot-menubar-label /tmp/menubar.png  # 菜单栏标签（图标 + 数值）
 # --snapshot-fake-capture 用合成图片填充“刚截取的画面”快捷条，便于无 TCC 权限时验收
 # --snapshot-clipboard-scope 让剪贴板页直接渲染「收藏」或「实时」分区
 "$APP/Contents/MacOS/Kaiming" --snapshot-clipboard-picker /tmp/picker.png [--snapshot-clipboard-scope live|favorites]
@@ -205,6 +213,7 @@ log show --info --debug --last 5m --predicate 'subsystem == "com.kaiming.app"' -
 - [ ] 「恢复全部默认」回到 ⌥⇧ 系列（需再点保存）。
 - [ ] 关闭全局快捷键后全部失效；重新开启后恢复，无需重启。
 - [ ] 所有设置项重启后保持。
+- [ ] 设置窗口统一为「图标卡片」布局，七个分类页可滚动；开关、Picker、Stepper、录制与保存均正常。
 - [ ] 「登录时自动启动」在签名构建上可注册/注销；失败时显示系统错误。
 - [ ] 「恢复默认设置」清空自定义值并重新注册快捷键。
 
@@ -234,9 +243,11 @@ log show --info --debug --last 5m --predicate 'subsystem == "com.kaiming.app"' -
 - [ ] ↑/↓ 移动高亮、Return 复制并关闭、Esc 关闭；中文输入法组合期间不抢键。
 - [ ] 输入文字能过滤列表（方向键不移动光标而是移动选中项）。
 - [ ] `--picker-key-test` 输出的 4 张截图依次高亮第 1/2/3/2 行。
-- [ ] 搜索过滤文本/文件名/类型；空历史与无结果有提示；收藏项显示橙色 ☆。
+- [ ] 搜索过滤文本/文件名/类型；空历史与无结果有提示；收藏项显示橙色实心 ☆。
 - [ ] 快捷选择窗口有「收藏 / 实时」tab：切换后列表、计数、↑/↓ 选中范围只在当前分区内变化。
-- [ ] 「收藏」tab 空态提示「在剪贴板面板里点 ☆ 收藏」，搜索无结果时提示只在收藏里搜索。
+- [ ] 每行右侧 ☆ 可收藏/取消收藏且不触发复制；选中行按 ⌘D 同样切换收藏。
+- [ ] 收藏「当前剪贴板」临时条目后会写入历史，并立即出现在「收藏」分区。
+- [ ] 「收藏」tab 空态提示「在任意记录右侧点 ☆ 收藏」，搜索无结果时提示只在收藏里搜索。
 - [ ] 面板剪贴板页的「⌥⇧C」按钮可打开同一窗口。
 
 ### Markdown 目录树 / CLI
@@ -260,3 +271,67 @@ log show --info --debug --last 5m --predicate 'subsystem == "com.kaiming.app"' -
 - [ ] 完成/取消/自动无变化/手动长时间无变化/20000px 上限均正确停止并进入预览确认。
 - [ ] 拼接结果无重复内容/无断裂；无变化、超过 20000px、Esc 取消均正确提示。
 - [ ] 长截图结果进入预览确认，之后正常写剪贴板/历史/自动保存。
+
+## 10. 系统资源
+
+### 采样
+- [ ] 打开「系统」tab，2 秒内出现内存百分比、CPU 负载、磁盘、网络速率；网络曲线在采样 2 帧后出现。
+- [ ] 面板收起后系统采样停止（用活动监视器观察 Kaiming 的 CPU / 能耗回落）；再次打开后数值继续刷新。
+- [ ] 切到截图 / 剪贴板 tab 后同样停止，返回系统 tab 恢复。
+- [ ] 内存百分比与活动监视器的「已用内存」接近（±5%），交换区用量显示在卡片右下。
+- [ ] 应用内存前 5 名按字节降序；第 6 行起聚合为「其他 N 个应用」，合计等于其余应用 footprint 之和。
+- [ ] 无风扇机型（MacBook Air）风扇显示「—」，不影响温度 / 负载；无温度传感器的机型显示「—」。
+- [ ] 亮色 / 深色模式切换后面板颜色、卡片、曲线均正常（`--snapshot` 可验证）。
+
+### 清理释放
+- [ ] 首次进入自动扫描；扫描期间显示「扫描中…」，完成后显示可清理总量与三类大小。
+- [ ] 勾选 / 取消类别后，确认卡片中的总量与「清理」按钮可用状态同步变化。
+- [ ] 点「清理」出现**面板内**确认卡片（不弹系统弹窗、面板不收起）；取消后回到类别勾选。
+- [ ] 确认清理后显示进度，完成后顶部 notice 显示实际清理量，缓存大小刷新。
+- [ ] 最近 1 小时内修改的缓存文件保留（`find ~/Library/Caches -newermt '-1 hour'` 抽查）。
+- [ ] 关闭面板时确认卡片复位；再次打开不会停在确认态。
+- [ ] 「释放」期间按钮显示「释放中」，完成后 notice 显示采样差值；内存百分比刷新。
+
+### 传感器 / 权限
+- [ ] CPU 温度来源标注为「CPU 集群 / PMU 晶粒 / SOC 晶粒」，数值在 20–110°C 合理区间。
+- [ ] 风扇转速与第三方工具（如 Stats / iStat Menus）读数接近（±5%）。
+- [ ] 读取失败只降级为「—」，不崩溃、不弹权限框（本模块不需要 TCC 权限）。
+- [ ] `--logic-test-system` 输出 memory / cpu / disk / sensors / network / apps / cache-scan / release 各一行，且进程正常退出。
+
+### 状态栏指标（v1.2）
+- [ ] 首次启动 / 未写入过设置时，系统功能页「状态栏」7 个标签全部选中，菜单栏显示图标 + 7 项指标。
+- [ ] 关闭某个标签后，菜单栏对应指标立即消失；重新打开立即出现，无需重启。
+- [ ] 全部关闭后菜单栏只剩开明图标；重新打开任一指标后恢复，选择在重启应用后保持。
+- [ ] 菜单栏显示温度计 / CPU / 风扇 / 内存 / 磁盘 / 上下行箭头图标与数值，与系统功能页一致。
+- [ ] 面板打开时约 2 秒更新；收起面板但状态栏仍有指标时约 3 秒更新；全部关闭且面板收起后不再采样。
+- [ ] 温度 / 风扇不可用的机型，菜单栏对应位置显示「—」，其余指标正常。
+- [ ] `--snapshot-menubar-label` 渲染出完整指标条，暗色 / 亮色下文字均清晰。
+- [ ] 菜单栏空间紧张时（小屏 + 多项指标）可通过关闭部分指标把宽度降下来。
+
+## 11. 应用卸载（v1.2）
+
+### 列表与扫描
+- [ ] 系统页第三个 tab「应用卸载」；首次进入显示 `/Applications` + `~/Applications` 第三方应用。
+- [ ] Apple 系统应用（`com.apple.*`）与开明自身不出现；符号链接应用跳过。
+- [ ] 搜索框按应用名 / bundle id 过滤；运行中的应用显示「运行中」。
+- [ ] 选择应用后自动扫描；应用本体、共享容器、沙盒容器、支持文件、缓存、偏好、日志、
+      窗口状态、网络数据、脚本、插件/扩展、启动项、用户目录同名项按类别显示，默认全选。
+- [ ] 用户目录同名项显示橙色「请确认不是个人文件」；取消勾选后不删除。
+- [ ] 取消勾选非应用本体条目后，总量与按钮文案同步变化；「全选 / 全不选」不取消应用本体。
+- [ ] 应用本体行带锁/不可取消；卸载按钮旁显示将删除的总大小。
+
+### 确认与删除
+- [ ] 点「卸载并删除」出现面板内红色确认卡片（不弹系统弹窗、面板不收起）；取消后回到详情。
+- [ ] 确认后运行中的应用先退出；未运行的应用直接进入删除；期间显示「正在退出并删除…」。
+- [ ] 应用拒绝退出时中止，详情显示「未能退出该应用」，不删除任何文件。
+- [ ] 应用本体删除失败时立即中止，不继续删除缓存/偏好；详情保留并显示失败路径。
+- [ ] 应用本体删除成功、部分关联文件失败时，详情保留失败摘要；应用已从列表消失。
+- [ ] 全部成功后返回应用列表、该应用消失，顶部 notice 显示释放量。
+- [ ] 未授予完全磁盘访问权限时，Cookies / 容器等失败，不影响应用本体删除，失败项可见/可查日志。
+
+### 夹具自检
+- [ ] `--logic-test-uninstall` 输出 `PASS=true`，`items` / `removed` ≥ 15，`decoysKept=true`，
+      `guard=true`；结束后 `~/Applications/KaimingUninstallTest.app`、`~/Documents/KaimingUninstallTest`
+      与测试缓存全部清理。
+- [ ] 自检创建的 `com.kaiming.uninstall-test2` / `KaimingUninstallTest2` 诱饵未被删除
+      （bundle id 前缀匹配不能误伤纯数字后缀）。

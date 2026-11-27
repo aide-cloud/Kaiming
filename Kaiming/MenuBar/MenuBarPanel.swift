@@ -7,6 +7,10 @@ struct MenuBarPanel: View {
     @Environment(\.openWindow) private var openWindow
     /// 剪贴板页初始分区；正式启动保持默认「实时」，调试快照可显式指定。
     var clipboardScope: ClipboardScope = .live
+    /// 系统页初始分区；正式启动保持「清理释放」，调试快照可显式指定。
+    var systemSection: SystemSection = .clean
+
+    @State private var viewportHeight: CGFloat = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -130,10 +134,25 @@ struct MenuBarPanel: View {
                     }
                 case .clipboard:
                     ClipboardPanelView(initialScope: clipboardScope)
+                case .system:
+                    SystemPanelView(
+                        initialSection: systemSection,
+                        availableHeight: max(0, viewportHeight - 28)
+                    )
                 }
             }
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .background(
+            GeometryReader { proxy in
+                Color.clear.preference(key: PanelViewportHeightKey.self, value: proxy.size.height)
+            }
+        )
+        .onPreferenceChange(PanelViewportHeightKey.self) { height in
+            MainActor.assumeIsolated {
+                viewportHeight = height
+            }
         }
     }
 
@@ -143,57 +162,61 @@ struct MenuBarPanel: View {
     // MARK: - 截图后快捷操作（阶段 6）
 
     private func captureQuickActions(_ image: NSImage) -> some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 9) {
             Image(nsImage: image)
                 .resizable()
                 .scaledToFill()
-                .frame(width: 64, height: 40)
-                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .frame(width: 62, height: 40)
+                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
                 )
 
-            VStack(alignment: .leading, spacing: 1) {
-                Text("刚截取的画面")
-                    .font(.system(size: 11, weight: .semibold))
-                Text("可直接复用，无需再次截图")
-                    .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 4) {
+                    Text("截图完成")
+                        .font(.system(size: 10, weight: .semibold))
+                    PanelChip(
+                        text: settings.copyScreenshotToClipboard ? "已复制" : "未复制",
+                        tint: settings.copyScreenshotToClipboard ? PanelPalette.mint : .secondary
+                    )
+                }
+                Text("可保存或再次复制，无需重新截图")
+                    .font(.system(size: 8))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
             }
 
             Spacer(minLength: 0)
 
-            Button {
+            quickActionButton("square.and.arrow.down", help: "保存副本到截图文件夹") {
                 saveCapture(image)
-            } label: {
-                Image(systemName: "square.and.arrow.down")
             }
-            .help("保存副本到截图文件夹")
-
-            Button {
+            quickActionButton("doc.on.doc", help: "复制到剪贴板") {
                 copyCaptureToPasteboard(image)
-            } label: {
-                Image(systemName: "doc.on.doc")
             }
-            .help("复制到剪贴板")
-
-            Button {
+            quickActionButton("xmark", help: "收起") {
                 appState.clearLastCapture()
-            } label: {
-                Image(systemName: "xmark")
             }
-            .help("收起")
-
-            Spacer().frame(width: 2)
         }
-        .buttonStyle(.borderless)
-        .font(.system(size: 12))
-        .padding(8)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.accentColor.opacity(0.08))
-        )
+        .panelCard(padding: 8)
+    }
+
+    private func quickActionButton(
+        _ symbol: String,
+        help: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 10, weight: .medium))
+                .frame(width: 22, height: 22)
+                .background(Circle().fill(Color.primary.opacity(0.06)))
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
     }
 
     private func saveCapture(_ image: NSImage) {
@@ -275,5 +298,12 @@ struct MenuBarPanel: View {
 
     private static var appVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
+    }
+}
+
+private struct PanelViewportHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }

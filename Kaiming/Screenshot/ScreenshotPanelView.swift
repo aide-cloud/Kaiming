@@ -19,19 +19,23 @@ struct ScreenshotPanelView: View {
         var id: URL { url }
     }
 
+    private let modeColumns = [
+        GridItem(.flexible(), spacing: 7),
+        GridItem(.flexible(), spacing: 7),
+        GridItem(.flexible(), spacing: 7),
+    ]
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 10) {
             if coordinator.isCapturing {
-                capturingRow
+                capturingCard
             }
 
-            modeSection
-            recentSection
-
-            Text("区域截图支持 8 个手柄、0–48pt 圆角（四角透明）与画笔手写/矩形/箭头/文字标注；已有标注可拖动、缩放、编辑文字或删除，选中区域后可进入长截图（自动滚动需辅助功能权限，也可手动滚动拼接）。")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            PanelHeader(icon: "camera.viewfinder", title: "快速截图", caption: "点击或按快捷键")
+            modeGrid
+            recentCard
+            capabilityCard
+            behaviorCard
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .onAppear {
@@ -45,82 +49,87 @@ struct ScreenshotPanelView: View {
 
     // MARK: - 截图进行中
 
-    private var capturingRow: some View {
+    private var capturingCard: some View {
         HStack(spacing: 8) {
             ProgressView()
                 .controlSize(.small)
-            Text("截图进行中：拖拽或点击屏幕，Return 确认，Esc 取消。")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("截图进行中")
+                    .font(.system(size: 10, weight: .semibold))
+                Text("拖拽或点击屏幕 · Return 确认 · Esc 取消")
+                    .font(.system(size: 8))
+                    .foregroundStyle(.secondary)
+            }
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 2)
+        .panelCard()
     }
 
     // MARK: - 三种模式
 
-    private var modeSection: some View {
-        VStack(spacing: 7) {
+    private var modeGrid: some View {
+        LazyVGrid(columns: modeColumns, spacing: 7) {
             ForEach(CaptureMode.allCases) { mode in
-                modeCard(mode, shortcut: shortcut(for: mode))
+                modeTile(mode)
             }
         }
     }
 
-    private func modeCard(_ mode: CaptureMode, shortcut: String) -> some View {
+    private func modeTile(_ mode: CaptureMode) -> some View {
+        let shortcut = shortcut(for: mode)
+        let tint = tint(for: mode)
         let isHovering = hoveredMode == mode
+
         return Button {
             coordinator.start(mode: mode)
         } label: {
-            HStack(spacing: 10) {
-                Image(systemName: mode.symbolName)
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(Color.accentColor)
-                    .frame(width: 28, height: 28)
-                    .background(
-                        RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            .fill(Color.accentColor.opacity(0.12))
-                    )
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(mode.title)
-                        .font(.system(size: 12, weight: .semibold))
-                    Text(mode.subtitle)
-                        .font(.system(size: 10))
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(alignment: .top, spacing: 4) {
+                    PanelIconBadge(symbol: mode.symbolName, tint: tint, size: 26)
+                    Spacer(minLength: 0)
+                    Text(shortcut)
+                        .font(.system(size: 8, weight: .medium, design: .rounded))
                         .foregroundStyle(.secondary)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(Color.primary.opacity(0.06)))
+                        .fixedSize()
                 }
 
-                Spacer(minLength: 8)
+                Text(mode.title)
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .lineLimit(1)
 
-                Text(shortcut)
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                Text(mode.subtitle)
+                    .font(.system(size: 8))
                     .foregroundStyle(.secondary)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .background(
-                        RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .fill(Color.secondary.opacity(0.12))
-                    )
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color.primary.opacity(isHovering ? 0.08 : 0.04))
-            )
+            .frame(maxWidth: .infinity, minHeight: 66, alignment: .topLeading)
+            .panelTile(padding: 8)
             .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .strokeBorder(isHovering ? tint.opacity(0.45) : Color.clear, lineWidth: 1)
             )
+            .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
         }
         .buttonStyle(.plain)
         .disabled(coordinator.isCapturing)
         .onHover { hovering in
-            hoveredMode = hovering ? mode : (hoveredMode == mode ? nil : hoveredMode)
+            withAnimation(.easeOut(duration: 0.1)) {
+                hoveredMode = hovering ? mode : (hoveredMode == mode ? nil : hoveredMode)
+            }
         }
         .help("\(mode.title)（\(shortcut)）")
+    }
+
+    private func tint(for mode: CaptureMode) -> Color {
+        switch mode {
+        case .region: PanelPalette.mint
+        case .window: PanelPalette.sky
+        case .fullScreen: PanelPalette.violet
+        }
     }
 
     private func shortcut(for mode: CaptureMode) -> String {
@@ -134,26 +143,48 @@ struct ScreenshotPanelView: View {
 
     // MARK: - 最近截图
 
-    private var recentSection: some View {
+    private var recentCard: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Text("最近截图")
-                    .font(.system(size: 11, weight: .semibold))
-                Spacer()
-                Button("在 Finder 中打开") {
+            HStack(spacing: 4) {
+                PanelHeader(
+                    icon: "photo.stack",
+                    title: "最近截图",
+                    caption: recentCaptures.isEmpty ? nil : "\(recentCaptures.count) 张"
+                )
+                Spacer(minLength: 4)
+                Button {
                     openCapturesFolder()
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "folder")
+                            .font(.system(size: 8))
+                        Text("打开文件夹")
+                            .font(.system(size: 8))
+                    }
+                    .foregroundStyle(Color.accentColor)
                 }
-                .buttonStyle(.link)
-                .font(.system(size: 10))
+                .buttonStyle(.plain)
+                .help("在 Finder 中打开截图目录")
             }
 
             if recentCaptures.isEmpty {
-                Text("还没有截图记录，截图成功后会自动保存到应用数据目录。")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else {
                 HStack(spacing: 8) {
+                    PanelIconBadge(symbol: "photo", tint: .secondary, size: 26)
+                    Text("截图完成后会显示在这里。")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                }
+                .padding(7)
+                .background(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .strokeBorder(
+                            Color.secondary.opacity(0.22),
+                            style: StrokeStyle(lineWidth: 1, dash: [4, 3])
+                        )
+                )
+            } else {
+                HStack(spacing: 6) {
                     ForEach(recentCaptures) { capture in
                         thumbnail(for: capture)
                     }
@@ -161,6 +192,7 @@ struct ScreenshotPanelView: View {
                 }
             }
         }
+        .panelCard()
     }
 
     private func thumbnail(for capture: RecentCapture) -> some View {
@@ -173,7 +205,7 @@ struct ScreenshotPanelView: View {
                         .resizable()
                         .scaledToFill()
                 } else {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
                         .fill(Color.secondary.opacity(0.12))
                         .overlay {
                             Image(systemName: "photo")
@@ -182,15 +214,97 @@ struct ScreenshotPanelView: View {
                         }
                 }
             }
-            .frame(width: 84, height: 52)
-            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .frame(width: 78, height: 50)
+            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
                     .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
         .help(capture.url.lastPathComponent)
+    }
+
+    // MARK: - 能力说明
+
+    private var capabilityCard: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 5) {
+                PanelChip(icon: "hand.draw", text: "8 手柄", tint: PanelPalette.mint)
+                PanelChip(icon: "square.dashed", text: "圆角 0–48pt", tint: PanelPalette.sky)
+                PanelChip(icon: "pencil.tip", text: "标注编辑", tint: PanelPalette.violet)
+                PanelChip(icon: "arrow.up.and.down", text: "长截图", tint: PanelPalette.amber)
+                Spacer(minLength: 0)
+            }
+            Text("自动滚动需辅助功能权限；也可手动滚动拼接。")
+                .font(.system(size: 8))
+                .foregroundStyle(.tertiary)
+        }
+        .panelCard()
+    }
+
+    // MARK: - 截图之后
+
+    private var behaviorCard: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            PanelHeader(icon: "slider.horizontal.3", title: "截图之后", caption: "保存与剪贴板")
+
+            LazyVGrid(
+                columns: [
+                    GridItem(.flexible(), spacing: 6),
+                    GridItem(.flexible(), spacing: 6),
+                ],
+                spacing: 6
+            ) {
+                behaviorToggle(
+                    "复制到剪贴板",
+                    icon: "doc.on.doc",
+                    isOn: $settings.copyScreenshotToClipboard
+                )
+                behaviorToggle(
+                    "自动保存",
+                    icon: "square.and.arrow.down",
+                    isOn: $settings.autoSaveScreenshots
+                )
+                behaviorToggle(
+                    "窗口头部",
+                    icon: "macwindow",
+                    isOn: $settings.screenshotImageWindowHeader
+                )
+                behaviorToggle(
+                    "隐藏本应用",
+                    icon: "eye.slash",
+                    isOn: $settings.screenshotHideOwnWindows
+                )
+            }
+        }
+        .panelCard()
+    }
+
+    private func behaviorToggle(
+        _ title: String,
+        icon: String,
+        isOn: Binding<Bool>
+    ) -> some View {
+        Toggle(isOn: isOn) {
+            HStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(.system(size: 8))
+                    .foregroundStyle(.secondary)
+                Text(title)
+                    .font(.system(size: 8.5))
+                    .lineLimit(1)
+            }
+        }
+        .toggleStyle(.checkbox)
+        .controlSize(.mini)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Color.primary.opacity(0.03))
+        )
     }
 
     private func reloadRecentCaptures() {

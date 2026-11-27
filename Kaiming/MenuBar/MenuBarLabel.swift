@@ -5,11 +5,14 @@ import SwiftUI
 /// 保证菜单栏面板还没打开过时，全局快捷键也能拿到 openWindow 等环境能力。
 struct MenuBarLabel: View {
     @Environment(\.openWindow) private var openWindow
+    @ObservedObject private var monitor = SystemMonitor.shared
+    @ObservedObject private var settings = SettingsStore.shared
 
     var body: some View {
-        Image("MenuBarIcon")
+        Image(nsImage: statusImage)
             .renderingMode(.template)
-            .accessibilityLabel("Kaiming")
+            .accessibilityLabel(accessibilityText)
+            .help(menuBarTooltip)
             .task {
                 registerRouter()
                 #if DEBUG
@@ -22,6 +25,48 @@ struct MenuBarLabel: View {
                 }
                 #endif
             }
+    }
+
+    private var statusImage: NSImage {
+        MenuBarStatusImage.make(metrics: visibleMetrics, monitor: monitor)
+    }
+
+    private var visibleMetrics: [SystemStatusMetric] {
+        SystemStatusMetric.allCases.filter { settings.statusBarMetrics.contains($0) }
+    }
+
+    private var menuBarTooltip: String {
+        guard !visibleMetrics.isEmpty else { return "Kaiming" }
+        return visibleMetrics
+            .map { "\($0.title)：\(detailedValue($0))" }
+            .joined(separator: "，")
+    }
+
+    private func detailedValue(_ metric: SystemStatusMetric) -> String {
+        switch metric {
+        case .cpuTemperature:
+            SystemFormat.temperature(monitor.sensors.cpuTemperature)
+        case .cpuUsage:
+            SystemFormat.percent(monitor.cpu.usage)
+        case .fanSpeed:
+            SystemFormat.rpm(monitor.sensors.fanRPM)
+        case .memoryUsage:
+            "\(monitor.memory.usedPercent)%"
+        case .diskUsage:
+            "\(monitor.disk.usedPercent)%"
+        case .networkDownload:
+            SystemFormat.rate(monitor.network.downloadBytesPerSecond)
+        case .networkUpload:
+            SystemFormat.rate(monitor.network.uploadBytesPerSecond)
+        }
+    }
+
+    private var accessibilityText: String {
+        var parts = ["Kaiming"]
+        for metric in visibleMetrics {
+            parts.append("\(metric.title) \(detailedValue(metric))")
+        }
+        return parts.joined(separator: "，")
     }
 
     private func registerRouter() {

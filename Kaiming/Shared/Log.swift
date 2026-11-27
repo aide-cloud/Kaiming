@@ -10,4 +10,5 @@ enum Log {
     static let clipboard = Logger(subsystem: subsystem, category: "clipboard")
     static let markdown = Logger(subsystem: subsystem, category: "markdown")
     static let hotkey = Logger(subsystem: subsystem, category: "hotkey")
+    static let system = Logger(subsystem: subsystem, category: "system")
 }

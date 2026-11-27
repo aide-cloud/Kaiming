@@ -10,6 +10,7 @@ final class AppState: ObservableObject {
     enum PanelTab: String, CaseIterable, Identifiable {
         case screenshot
         case clipboard
+        case system
 
         var id: String { rawValue }
 
@@ -17,6 +18,7 @@ final class AppState: ObservableObject {
             switch self {
             case .screenshot: "截图"
             case .clipboard: "剪贴板"
+            case .system: "系统"
             }
         }
 
@@ -24,6 +26,7 @@ final class AppState: ObservableObject {
             switch self {
             case .screenshot: "crop"
             case .clipboard: "doc.on.clipboard"
+            case .system: "cpu"
             }
         }
     }

@@ -251,10 +251,18 @@ final class ClipboardManager: ObservableObject {
     }
 
     func toggleFavorite(_ item: ClipboardItem) {
-        guard let index = items.firstIndex(where: { $0.id == item.id }) else { return }
-        items[index].isFavorite.toggle()
-        items[index].favoritedAt = items[index].isFavorite ? Date() : nil
-        let isFavorite = items[index].isFavorite
+        if let index = items.firstIndex(where: { $0.id == item.id }) {
+            items[index].isFavorite.toggle()
+            items[index].favoritedAt = items[index].isFavorite ? Date() : nil
+        } else {
+            // 快捷选择窗口会把「当前剪贴板」补成一条临时条目；它可能还没进历史，
+            // 此时收藏应当把它正式写入历史，而不是静默失败。
+            var favorite = item
+            favorite.isFavorite = true
+            favorite.favoritedAt = Date()
+            items.insert(favorite, at: 0)
+        }
+        let isFavorite = items.first(where: { $0.id == item.id })?.isFavorite ?? false
         // 只改标记，不动实时列表的先后顺序；「收藏」分区自己按收藏时间排序。
         persistHistory()
         Log.clipboard.info(
