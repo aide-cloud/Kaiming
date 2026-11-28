@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Kaiming Poster</title>
+<style>
+  @page { size: 2480px 3508px; margin: 0; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root{
+    --ink:#0a0c10;
+    --cream:#f4eee2;
+    --amber:#f0a04b;
+    --gold:#e8c48a;
+    --muted:#a7aeb8;
+    --line:rgba(255,255,255,.10);
+  }
+  html,body{ background:#0a0c10; }
+  #poster{
+    position:relative; width:2480px; height:3508px; overflow:hidden;
+    background:
+      radial-gradient(1100px 800px at 82% 4%, rgba(240,160,75,.12), transparent 70%),
+      radial-gradient(1500px 1100px at 30% 40%, rgba(110,150,200,.055), transparent 70%),
+      #0a0c10;
+    font-family:"PingFang SC","Hiragino Sans GB","Heiti SC",sans-serif;
+    color:var(--cream);
+  }
+  .art{
+    position:absolute; left:0; top:0; width:100%; height:2080px;
+    object-fit:cover; object-position:54% 60%;
+    opacity:.66;
+    filter:saturate(.8) brightness(.88);
+  }
+  .art-fade{
+    position:absolute; left:0; top:0; width:100%; height:2080px;
+    background:
+      linear-gradient(180deg, rgba(10,12,16,.94) 0%, rgba(10,12,16,.40) 22%, rgba(10,12,16,.28) 44%, rgba(10,12,16,.86) 78%, #0a0c10 97%),
+      linear-gradient(90deg, rgba(10,12,16,.97) 0%, rgba(10,12,16,.90) 32%, rgba(10,12,16,.48) 60%, rgba(10,12,16,.16) 100%);
+  }
+  .grain{
+    position:absolute; inset:0; pointer-events:none; opacity:.45;
+    background-image:radial-gradient(rgba(255,255,255,.03) 1px, transparent 1px);
+    background-size:3px 3px;
+  }
+  .glow{
+    position:absolute; left:50%; top:62%; width:1900px; height:1300px; margin-left:-950px;
+    background:radial-gradient(closest-side, rgba(240,160,75,.13), rgba(240,160,75,.04) 55%, transparent 100%);
+    filter:blur(10px);
+  }
+
+  /* masthead */
+  .masthead{ position:absolute; left:150px; top:116px; right:150px; display:flex; align-items:center; }
+  .logo{
+    width:116px; height:116px; border-radius:26px; display:block;
+    box-shadow:0 18px 46px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.12);
+  }
+  .brand-text{ margin-left:28px; }
+  .brand-zh{ font-size:58px; font-weight:600; letter-spacing:.12em; line-height:1.02; }
+  .brand-en{ margin-top:10px; font-size:23px; letter-spacing:.48em; color:var(--gold); font-weight:500; }
+  .masthead .spacer{ flex:1; }
+  .meta{ text-align:right; font-size:26px; line-height:1.9; color:var(--muted); letter-spacing:.06em; }
+  .meta b{ color:var(--cream); font-weight:500; }
+
+  /* title */
+  .kicker{
+    position:absolute; left:154px; top:306px;
+    font-size:32px; letter-spacing:.28em; color:var(--gold); font-weight:500;
+    display:flex; align-items:center;
+  }
+  .kicker:before{ content:""; display:block; width:74px; height:2px; background:rgba(240,160,75,.75); margin-right:28px; }
+  h1{
+    position:absolute; left:140px; top:352px;
+    font-size:322px; line-height:1.02; font-weight:600; letter-spacing:.01em;
+    text-shadow:0 24px 80px rgba(0,0,0,.55);
+  }
+  h1 em{
+    font-style:normal;
+    background:linear-gradient(180deg,#ffd9a3 0%,#f0a04b 52%,#cf7626 100%);
+    -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent;
+  }
+  .modules{
+    position:absolute; left:154px; top:766px; display:flex; align-items:center; gap:24px;
+    font-size:82px; font-weight:500; letter-spacing:.04em;
+  }
+  .modules .sep{ width:9px; height:9px; border-radius:50%; background:rgba(240,160,75,.6); }
+  .lede{
+    position:absolute; left:158px; top:900px; width:1150px;
+    font-size:39px; line-height:1.76; color:#c6cbd2; letter-spacing:.015em;
+  }
+  .lede b{ color:var(--gold); font-weight:500; }
+
+  /* collage */
+  .shot{
+    position:absolute; display:block; border-radius:20px;
+    border:1px solid rgba(255,255,255,.13);
+    box-shadow:0 62px 130px rgba(0,0,0,.75), 0 0 0 1px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.10);
+    background:#14181f;
+  }
+  .shot img{ display:block; width:100%; border-radius:19px; }
+  .shot.md{ left:790px; top:1090px; width:1450px; transform:rotate(-.7deg); filter:brightness(.88) saturate(.92) contrast(1.02); }
+  .shot.panel{ left:150px; top:1150px; width:650px; transform:rotate(-1.6deg); box-shadow:0 78px 160px rgba(0,0,0,.85); }
+  .shot.sys{ left:280px; top:2112px; width:460px; transform:rotate(1.2deg); filter:brightness(1.16) contrast(1.04); box-shadow:0 70px 150px rgba(0,0,0,.8), 0 0 0 1px rgba(240,160,75,.14); }
+  .shot.picker{ left:1590px; top:2050px; width:700px; transform:rotate(1.5deg); }
+
+  /* features */
+  .features{ position:absolute; left:150px; top:2830px; width:2180px; display:flex; gap:40px; }
+  .cell{
+    width:515px; height:352px; padding:38px 36px 34px;
+    background:linear-gradient(180deg, rgba(255,255,255,.055), rgba(255,255,255,.018));
+    border:1px solid rgba(255,255,255,.09); border-radius:26px;
+    position:relative; overflow:hidden;
+  }
+  .cell .num{ font-size:23px; color:rgba(240,160,75,.9); letter-spacing:.2em; }
+  .cell h3{ font-size:56px; font-weight:600; margin-top:14px; letter-spacing:.05em; }
+  .cell p{ margin-top:16px; font-size:28px; line-height:1.62; color:var(--muted); }
+  .cell:after{
+    content:""; position:absolute; left:0; top:0; width:100%; height:3px;
+    background:linear-gradient(90deg, rgba(240,160,75,0), rgba(240,160,75,.9), rgba(240,160,75,0));
+  }
+
+  /* footer */
+  .foot{
+    position:absolute; left:150px; right:150px; top:3310px;
+    padding-top:32px; border-top:1px solid var(--line);
+    display:flex; justify-content:space-between; align-items:flex-end;
+    font-size:26px; color:var(--muted); letter-spacing:.05em;
+  }
+  .foot .left b{ color:var(--cream); font-weight:500; }
+  .foot .ver{ color:rgba(240,160,75,.9); }
+  .foot .right{ color:var(--gold); letter-spacing:.24em; font-size:24px; }
+</style>
+</head>
+<body>
+<div id="poster">
+  <img class="art" src="bg-portrait.png" alt="">
+  <div class="art-fade"></div>
+  <div class="glow"></div>
+  <div class="grain"></div>
+
+  <div class="masthead">
+    <img class="logo" src="../../brand/Kaiming-Color-1024.png" alt="">
+    <div class="brand-text">
+      <div class="brand-zh">开明</div>
+      <div class="brand-en">KAIMING</div>
+    </div>
+    <div class="spacer"></div>
+    <div class="meta">
+      <div><b>macOS 14+</b> · 原生 Swift 6</div>
+      <div>菜单栏常驻 · 本地运行 · 不联网</div>
+    </div>
+  </div>
+
+  <div class="kicker">山海经 · 开明兽 ——「目视四方」</div>
+  <h1>一眼<em>开明</em></h1>
+
+  <div class="modules">
+    <span>截图</span><i class="sep"></i><span>剪贴板</span><i class="sep"></i><span>系统</span><i class="sep"></i><span>Markdown</span>
+  </div>
+
+  <p class="lede">
+    一个常驻菜单栏的入口，收拢每天最琐碎的四种动作。<br>
+    <b>纯原生实现，不联网，不打扰</b>，把效率留给自己。
+  </p>
+
+  <img class="shot md" src="../../screenshots/markdown-folder-tree.png" alt="">
+  <img class="shot panel" src="../../screenshots/panel-screenshot.png" alt="">
+  <img class="shot sys" src="../../screenshots/system-features.png" alt="">
+  <img class="shot picker" src="picker-clean.png" alt="">
+
+  <div class="features">
+    <div class="cell">
+      <div class="num">01</div>
+      <h3>截图</h3>
+      <p>区域 / 窗口 / 长截图，标注、圆角、窗口头部一步到位。</p>
+    </div>
+    <div class="cell">
+      <div class="num">02</div>
+      <h3>剪贴板</h3>
+      <p>⌥⇧C 唤起，↑↓ 找回十分钟前复制过的那一行。</p>
+    </div>
+    <div class="cell">
+      <div class="num">03</div>
+      <h3>系统</h3>
+      <p>温度 / 风扇 / 内存 / 网络，菜单栏一眼可见。</p>
+    </div>
+    <div class="cell">
+      <div class="num">04</div>
+      <h3>Markdown</h3>
+      <p>TextKit 2 实时渲染，Typora 式写作，导出 A4 PDF。</p>
+    </div>
+  </div>
+
+  <div class="foot">
+    <div class="left"><span class="ver">v0.0.3</span> · 纯 Swift 6 · Apple 原生框架 · <b>全部数据仅存本机</b></div>
+    <div class="right">开明 KAIMING · 目视四方</div>
+  </div>
+</div>
+</body>
+</html>
